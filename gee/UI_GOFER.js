@@ -15,7 +15,7 @@ var nlcd = ee.ImageCollection("USGS/NLCD_RELEASES/2019_REL/NLCD"),
 // *****************************************************************
 /*
 // @author Tianjia Liu (embrslab@gmail.com)
-// Last updated: January 13, 2025
+// Last updated: June 2, 2025
 */
 // =================================================================
 // **********************   --    Code    --   *********************
@@ -438,14 +438,12 @@ var subTitle = ui.Label('GOFER: GOES-Observed Fire Event Representation, version
 var dataLabel = ui.Label('[Data]', {textAlign: 'left', margin: '0px 5px 6px 12px', fontSize: '12.5px', color: '#5886E8'}, 'https://doi.org/10.5281/zenodo.8327264');
 var codeLabel = ui.Label('[Code/Updates]', {textAlign: 'left', margin: '0px 5px 6px 3px', fontSize: '12.5px', color: '#5886E8'}, 'https://github.com/tianjialiu/GOFER');
 var paperLabel = ui.Label('[Paper]', {textAlign: 'left', margin: '0px 5px 6px 3px', fontSize: '12.5px', color: '#5886E8'}, 'https://doi.org/10.5194/essd-16-1395-2024');
-var fireTrackingLabel = ui.Label('UCI-NASA Fire Tracking: ', {textAlign:'left', margin: '0px 5px 6px 6px', fontSize: '12.5px', color: '#000000'});
-var uciLabel = ui.Label('[UCI]', {textAlign: 'left', margin: '0px 5px 6px 3px', fontSize: '12.5px', color: '#5886E8'}, 'https://www.ess.uci.edu/~uci-nasa-firetracking/');
-var nasaLabel = ui.Label('[NASA]', {textAlign: 'ledt', margin: '0px 5px 6px 3px', fontSize: '12.5px', color: '#5886E8'}, 'https://earth-information-system.github.io/fireatlas/docs/data_overview.html#published-datasets');
+var infoLabel = ui.Label('[UCI-UBC-NASA Fire Tracking]', {textAlign: 'left', margin: '0px 5px 6px 3px', fontSize: '12.5px', color: '#5886E8'}, 'https://www.ess.uci.edu/~uci-nasa-firetracking/');
 
 
 var subTitleLinks = ui.Panel([
   subTitle,
-  ui.Panel([dataLabel, codeLabel, paperLabel, fireTrackingLabel, uciLabel, nasaLabel],
+  ui.Panel([dataLabel, codeLabel, paperLabel, infoLabel],
     ui.Panel.Layout.Flow('horizontal'), {stretch: 'horizontal'})
 ],ui.Panel.Layout.Flow('vertical'), {stretch: 'horizontal'});
 
