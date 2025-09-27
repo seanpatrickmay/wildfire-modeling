@@ -18,6 +18,7 @@ For more information on all of our fire tracking algorithms and datasets, please
 | 1a - `Export_FireConf.js` | export GOES fire detection confidence |
 | 1b - `Export_Parallax.js` | export GOES parallax displacement in x and y-directions |
 | 2 - `Export_ParamSens.js`, `eePro_ParamSens.R` | export optimization metric for confidence threshold and parallax adjustment factor |
+| 3 - `Export_ScaleVal.js` | export early perimeter scaling factors |
 | 4 - `Export_FireProg.js`, `eePro_FireProg.R` | export fire perimeters |
 | 5 - `Export_FireProgQA.js` | quality control post-processing for fire perimeters |
 | 6a - `Export_cFireLine.js`, `eePro_cFireLine.R` | export concurrent active fire lines |
