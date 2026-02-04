@@ -1,143 +1,145 @@
-# GOFER
-GOFER: GOES-Observed Fire Event Representation
+# Wildfire Prediction Data + Regression Workflow
 
-The GOFER algorithm uses geostationary satellite observations of active fires from GOES-East and GOES-West to map the hourly progression of large wildfires (over 50,000 acres or 202 sq. km). GOES observes North and South America with a spatial resolution of 2 km at the equator and at a frequency of 10-15 minutes for the full disk view. Along with the fire perimeter, we derive the active fire lines and fire spread rates. We tested the GOFER algorithm on a set of 28 wildfires in California from 2019-2021 and produced three versions of the product: GOFER-Combined, GOFER-East, and GOFER-West. GOFER-Combined uses both GOES-East and GOES-West observations, while GOFER-East and GOFER-West use only GOES-East and only GOES-West observations, respectively. We find that GOFER performs reasonably well compared to final perimeters from California's Fire and Resource Assessment Program (FRAP) and 12-hourly perimeters from the Fire Event Data Suite (FEDS), derived from 375-m active fire observations. See our [ESSD paper](https://doi.org/10.5194/essd-16-1395-2024) for more details. The [GOFER Product Visualization](https://globalfires.earthengine.app/view/gofer) app on Earth Engine Apps provides an overview of the product, alongside other products and datasets, such as FEDS and FRAP perimeters and 30-m burn severity from Monitoring Trends in Burn Severity (MTBS). The product of 28 large wildfires in California from 2019-2021 is available on [Zenodo](https://doi.org/10.5281/zenodo.8327264). The current version of GOFER is version 0.2.
+This repository is a local data-ingestion and modeling workflow used to:
 
-## Documentation
-- docs/README.md: repository overview, pipelines, and pointers
-- scripts/README.md: CLI utilities and examples
-- data/README.md: generated data layout and file formats
-- gee/README.md: Earth Engine scripts and assets
-- R/README.md: R post-processing scripts
-- webapp/README.md: local JSON viewer
-- docs/aggregate_regression_report.ipynb: condensed regression report notebook
+- download wildfire-related datasets (GOES/GOFER confidence stacks and aligned meteorology)
+- normalize local credentials for optional APIs via environment variables or `.env`
+- convert gridded data into GOFER-style JSON time series
+- run locational logistic regressions (spread + continuation)
+- summarize results in regression reports and Jupyter notebooks
 
-For more information on all of our fire tracking algorithms and datasets, please visit the [UCI-UBC-NASA fire tracking webpage](https://www.ess.uci.edu/~uci-nasa-firetracking/).
+If you are looking for the GOFER product generation pipeline itself, it lives under `gee/` (Earth Engine) and `R/` (post-processing). The day-to-day work in this repo is the data download + regression analysis pipeline.
 
-![banner image](https://github.com/tianjialiu/GOFER/blob/main/docs/imgs/GOFER.png)
+## Pipeline at a Glance
 
-### Code Structure
-| Code | Description | 
-| :--- | :--- |
-| `largeFires_metadata.js` | dictionary of key metadata for all fires in EE |
-| `fireData.csv` | dictionary of key metadata for all fires in R |
-| 0a - `Calc_staging.js` | set temporal and spatial constraints for each fire by manually inspecting GOES active fire pixels and timeseries |
-| 0b - `Calc_kernelRes.js`  | calculate the kernel radius for smoothing based on the GOES spatial resolution |
-| 0c - `Export_fireData.js`  | export fire metadata and save as `fireData.csv` |
-| 1a - `Export_FireConf.js` | export GOES fire detection confidence |
-| 1b - `Export_Parallax.js` | export GOES parallax displacement in x and y-directions |
-| 2 - `Export_ParamSens.js`, `eePro_ParamSens.R` | export optimization metric for confidence threshold and parallax adjustment factor |
-| 3 - `Export_ScaleVal.js` | export early perimeter scaling factors |
-| 4 - `Export_FireProg.js`, `eePro_FireProg.R` | export fire perimeters |
-| 5 - `Export_FireProgQA.js` | quality control post-processing for fire perimeters |
-| 6a - `Export_cFireLine.js`, `eePro_cFireLine.R` | export concurrent active fire lines |
-| 6b - `Export_rFireLine.js`, `eePro_rFireLine.R` | export retrospective active fire lines |
-| 6c - `Export_FireIg.js` | export fire ignitions |
-| 7 - `Export_FireProgStats.js` | export fire spread rate, growth in fire-wide area|
-| 8 - `table_GOFERstats.R` | export GOFER summary stats for each fire |
-| 9 - `make_GOFERfinal.R` | export final GOFER data files, combined for all fires |
+1. Download GOES/GOFER confidence stacks from Earth Engine.
+2. Convert GOES stacks into GOFER-style JSON.
+3. Download RTMA hourly meteorology aligned to the GOES grid.
+4. Normalize RTMA into a single JSON (optional but commonly used).
+5. Run locational logistic regressions (single fire or aggregated).
+6. Review regression reports and notebooks.
 
-### File Structure
-Earth Engine Assets
-```
-GOFER/
-	GOFERC_fireProg/
-	GOFERC_fireIg/
-	GOFERC_cfireLine/
-	GOFERC_rfireLine/
-	GOFERC_fireProgStats/
-	GOFERC_scaleVal/
-	...
-	GOESEast_MaxConf/
-	GOESWest_MaxConf/
-	GOESEast_Parallax/
-	GOESWest_Parallax/
+## Data Sources
+
+- GOES/GOFER confidence stacks (Earth Engine assets).
+- NOAA/NWS RTMA hourly meteorology (Earth Engine).
+- Optional FIRMS VIIRS detections (NASA FIRMS API).
+- Optional RAWS station data (Synoptic Data API).
+
+## Environment and Credentials
+
+Earth Engine downloads require `earthengine-api` and authentication. Optional APIs (FIRMS, Synoptic) use a simple credential normalization pattern: scripts check CLI flags first, then environment variables, then a local `.env` file, and accept multiple common key names.
+
+- FIRMS tokens: `FIRMS_MAP_KEY` (also accepts `MAP_KEY`, `map-key`, `map_key`).
+- Synoptic tokens: `SYNOPTIC_TOKEN` (also accepts `SYNOPTIC_API_TOKEN`, `SYNOPTIC_PUBLIC_TOKEN`, `TOKEN`, `token`).
+
+Example `.env`:
+
+```text
+FIRMS_MAP_KEY=your_firms_key
+SYNOPTIC_TOKEN=your_synoptic_token
 ```
 
-Local
-```
-GOES/
-	fireData.csv
-	ee_fireProg_chunks/
-	ee_fireProg_temp/
-	ee_rfireLine/
-	ee_cfireLine_chunks/
-	ee_fireIg/
-	ee_fireStats/
-	ee_paramSens_chunks/
-	gofer_combined/
-		fireProg/
-		fireIg/
-		cfireLine/
-		rfireLine/
-		paramSens/
-		fireStats/
-		summary/
-	gofer_east/
-		...
-	gofer_west/
-		...
+## Dependencies
+
+- Python 3.10+
+- `earthengine-api` for Earth Engine downloads
+- `numpy`, `rasterio`, `scikit-learn` for conversion and regression
+
+There is no lockfile in this repo, so install dependencies in your environment of choice.
+
+## Quickstart (Single Fire)
+
+1. Download GOES confidence stack (Earth Engine):
+
+```bash
+python3 scripts/ee_download_confidence_stack.py \
+  --fire-name "Kincade" --year 2019 --source east \
+  --output data/ee_exports/Kincade_2019_GOESEast_MaxConf.tif
 ```
 
-### Data Structure
-```
-GOFER/
-	fireData.csv
-	GOFER-Combined/
-		GOFERC_fireProg.shp
-		GOFERC_cfireLine.shp
-		GOFERC_rfireLine.shp
-		GOFERC_fireIg.shp
-		GOFERC_summary.csv
-	GOFER-East/
-		...
-	GOFER-West/
-		...
+2. Convert GOES stack to JSON:
+
+```bash
+python3 scripts/gofer_confidence_to_json.py \
+  --input data/ee_exports/Kincade_2019_GOESEast_MaxConf.tif \
+  --output data/ee_exports/Kincade_2019_GOESEast_MaxConf.json \
+  --fire-name "Kincade" --year 2019 --source "GOES-East" \
+  --start-time "2019-10-24T04:00:00Z"
 ```
 
-### Earth Engine Repository
+3. Download RTMA aligned to GOES geometry:
+
+```bash
+python3 scripts/ee_download_rtma.py \
+  --goes-tif data/ee_exports/Kincade_2019_GOESEast_MaxConf.tif \
+  --start 2019-10-24T04:00:00Z --end 2019-10-31T04:00:00Z \
+  --output-dir data/rtma/kincade --chunk-hours 24
 ```
-https://code.earthengine.google.com/?accept_repo=users/embrslab/GOFER
+
+4. Normalize RTMA into a single JSON (optional):
+
+```bash
+python3 scripts/rtma_to_json.py \
+  --manifest data/rtma/kincade/rtma_manifest.json \
+  --output data/rtma/kincade/rtma_normalized.json \
+  --normalize zscore
 ```
 
-### Product Description
-| <b>Name</b> | <b>Short Name</b> | <b>Units</b> |
-| :--- | :--- | :--- |
-| <b>Global variables</b> | | |		
-| Fire name | fname | | 
-| Fire year | fyear | | 
-| | | |
-| <b>End-of-hour variables (t=1,2,3…)</b> | | |
-| Hours after ignition, end of hour | timestep | hours |
-| UTC time | tUTC | |
-| Local time, with daylight savings | tLocal | |
-| Local time, without daylight savings | tLocalGMT | |
-| Area within fire perimeter | farea | km<sup>2</sup> |
-| Area within fire perimeter, as a percentage of the final area | fareaPer | % |
-| Active fire line length (concurrent) | cflinelen | km |
-| Active fire line length (retrospective) | rflinelen | km |
-| Length of the perimeter | fperim | km |
-| State of the fire | fstate | 0 = dormant, 1 = active |
-| | | |
-| <b>Half-hour variables (t=0.5,1.5,2.5…)</b> | | |
-| Hours after ignition, half hour | timestep_hh | hours |
-| Growth in area | dfarea | km<sup>2</sup> |
-| Fire spread rate (MAE) | maefspread | km/h |
-| Fire spread rate (AWE) | awefspread | km/h |
+5. Run locational regressions:
 
-* For cflinelen, e.g. cflinelen5 = the portion of the perimeter that intersects with concurrent active fires with fire detection confidence > 0.05; cflinelen5 should be used as the default fire line as it incorporates most active fire pixels along the perimeter and most closely matches FEDS; for cfline, fconf similarly denotes the fire detection confidence of its definition
-* For fstate, both rfline and cfline have fstate columns, e.g. rfline_fstate; if the fire line is dormant at the timestep (fstate = 0), then that timestep is filled with the most recent cfline or the most immediate rfline after the timestep; to get the original flinelen, multiply by the corresponding fstate
+```bash
+python3 scripts/run_locational_regressions.py \
+  --goes-json data/ee_exports/Kincade_2019_GOESEast_MaxConf.json \
+  --rtma-manifest data/rtma/kincade/rtma_manifest.json \
+  --threshold 0.1 --neg-ratio 5 --max-samples 200000 \
+  --output-dir data/analysis/kincade
+```
 
-### Versions
-* [<b>0.0</b>](https://doi.org/10.5281/zenodo.8327265) - initial version for ESSD Discussions [(Liu et al., 2023)](https://doi.org/10.5194/essd-2023-389)
-* [<b>0.1</b>](https://doi.org/10.5281/zenodo.10442843) - published version in ESSD [(Liu et al., 2024)](https://doi.org/10.5194/essd-16-1395-2024)
-* [<b>0.11</b>](https://doi.org/10.5281/zenodo.14504174) - bug fixes: fix mismatched ignition time (GOES_UTC) in EE and `fireData.csv` for the 2019 Walker Fire, fix `scaleVal.csv` that previously duplicated the summary CSVs due to an error in the R code
-* [<b>0.12</b>](https://doi.org/10.5281/zenodo.14638647) - bug fixes: fix rfireline.shp that previously duplicated the `fireProg.shp` due to an error in the R code, fix headers of `scaleVal.csv` 
-* [<b>0.2</b>](https://doi.org/10.5281/zenodo.14642378) (current) - several minor updates including data pipeline streamlining: revise fire confidence for saturated fire pixels from 0.9 to 1.0, fix rfline in instances for multipolygons where a dormant segment of rfline persists too far in advance, use ICS-209 IDs to crosswalk GOFER, FEDS, FRAP, and MTBS, add EE script (`Export_fireData.js`) to download fireData information directly from EE to avoid future mismatches in metadata, fix instances of artifacts in GOFER-East and GOFER-West caused clipped parallax terrain correction inputs, revise colnames in `scaleVal.csv` to be consistent with other files; EE Apps now calls the Zenodo version of GOFER
-* Future updates: CA fires to be added - 2022 (Mosquito, McKinney), 2023 (Smith River Complex, York, SRF Lightning Complex), 2024 (Park, Borel, Bridge); manuscript on ICS-209 and crosswalking to geospatial datasets is in progress
+## Aggregate (Multi-Fire) Workflow
 
-## Datasets
-Liu, T., J.T. Randerson, Y. Chen, D.C. Morton, E.B. Wiggins, P. Smyth, E. Foufoula-Georgiou, R. Nadler, and O. Nevo (2024). GOES-Observed Fire Event Representation (GOFER) product for 28 California wildfires from 2019-2021. https://doi.org/10.5281/zenodo.8327264
+Run the end-to-end multi-fire pipeline (download, convert, normalize, regress):
 
-## Publications
-Liu, T., J.T. Randerson, Y. Chen, D.C. Morton, E.B. Wiggins, P. Smyth, E. Foufoula-Georgiou, R. Nadler, and O. Nevo (2024). Systematically tracking the hourly progression of large wildfires using GOES satellite observations. Earth Sys. Sci. Data, 16, 1395-1424. https://doi.org/10.5194/essd-16-1395-2024
+```bash
+python3 scripts/run_multi_fire_pipeline.py \
+  --output-dir data/multi_fire --chunk-size 256 --chunk-hours 24
+```
+
+Or build your own config and run the aggregate regression directly:
+
+```bash
+python3 scripts/run_locational_regressions_aggregate.py \
+  --config data/multi_fire/aggregate_config.json \
+  --threshold 0.1 --neg-ratio 0 --max-samples-per-fire 0 \
+  --output data/multi_fire/aggregate_regression_report.json
+```
+
+## Outputs
+
+- `data/analysis/<fire>/regression_report.json`
+- `data/analysis/<fire>/regression_report.txt`
+- `data/analysis/<fire>/probability_maps_spread.json`
+- `data/analysis/<fire>/probability_maps_continue.json`
+- `data/multi_fire/aggregate_regression_report.json`
+
+See `data/README.md` for a fuller output layout.
+
+## Notebooks and Visualization
+
+- `docs/aggregate_regression_report.ipynb` summarizes aggregated regression results.
+- `webapp/` provides a lightweight viewer for GOFER-style JSON time series.
+
+## Repository Layout
+
+- `scripts/` CLI utilities for downloads, conversions, and regressions
+- `data/` generated outputs and intermediate artifacts
+- `docs/` documentation and regression report notebooks
+- `gee/` Earth Engine pipeline for GOFER product generation
+- `R/` R post-processing scripts for GOFER
+- `webapp/` local JSON visualization
+
+## Notes and Scope
+
+- This is a research workflow, not a production forecasting system.
+- GOFER product assets are external; use `scripts/download_gofer_zenodo.py` if you want the published GOFER files without Earth Engine.
+- For more details on scripts and data formats, see `docs/README.md` and `scripts/README.md`.
