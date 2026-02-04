@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GOFER Matrix Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div>
+          <p class="kicker">GOFER Confidence Stack</p>
+          <h1>Fire Spread Matrix Viewer</h1>
+          <p class="subtitle">
+            Load a GOFER JSON file to animate hourly confidence grids.
+          </p>
+        </div>
+        <div class="controls">
+          <label class="file">
+            Load JSON
+            <input id="fileInput" type="file" accept="application/json" />
+          </label>
+          <button id="clearBtn" class="ghost" type="button">Clear</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="panel">
+          <div class="canvas-wrap">
+            <canvas id="matrixCanvas" width="1" height="1"></canvas>
+            <div class="overlay" id="emptyState">
+              <div>
+                <h2>No data loaded</h2>
+                <p>Select a JSON file exported from GOFER.</p>
+              </div>
+            </div>
+          </div>
+          <div class="meta" id="metaPanel">
+            <div>
+              <span>Fire</span>
+              <strong id="metaFire">—</strong>
+            </div>
+            <div>
+              <span>Source</span>
+              <strong id="metaSource">—</strong>
+            </div>
+            <div>
+              <span>Grid</span>
+              <strong id="metaGrid">—</strong>
+            </div>
+            <div>
+              <span>Pixel size</span>
+              <strong id="metaPixel">—</strong>
+            </div>
+            <div>
+              <span>CRS</span>
+              <strong id="metaCrs">—</strong>
+            </div>
+            <div>
+              <span>Time step</span>
+              <strong id="metaTime">—</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="timeline">
+        <input
+          id="timeSlider"
+          type="range"
+          min="0"
+          max="0"
+          step="1"
+          value="0"
+        />
+        <div class="time-label" id="timeLabel">Load data to begin</div>
+      </footer>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
