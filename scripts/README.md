@@ -109,3 +109,21 @@ End-to-end multi-fire pipeline: download GOES + RTMA, convert to JSON, normalize
 - Outputs: per-fire data under data/multi_fire and aggregate_regression_report.json.
 - Example:
   - python3 scripts/run_multi_fire_pipeline.py --output-dir data/multi_fire --chunk-size 256 --chunk-hours 24 --neg-ratio 0 --max-samples-per-fire 0
+
+## build_multires_manifest.py
+
+Build a versioned multi-resolution manifest (`manifest_version=2.0`) from a config JSON.
+
+- Inputs: multires config JSON (see `docs/examples/multires_config.example.json`).
+- Outputs: normalized manifest with flattened variable catalog.
+- Example:
+  - python3 scripts/build_multires_manifest.py --config docs/examples/multires_config.example.json --output data/multi_fire/North_Complex/multires_manifest_v2.json
+
+## validate_multires_manifest.py
+
+Validate a multi-resolution manifest (required keys, source uniqueness, variable linkage, basic type/range checks).
+
+- Inputs: multires manifest JSON.
+- Outputs: validation summary to stdout (non-zero exit on failure).
+- Example:
+  - python3 scripts/validate_multires_manifest.py --manifest data/multi_fire/North_Complex/multires_manifest_v2.json

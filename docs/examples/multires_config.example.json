@@ -1,0 +1,104 @@
+{
+  "study_area": {
+    "name": "North Complex",
+    "bbox": [-121.58, 39.47, -120.7, 40.0],
+    "bbox_crs": "EPSG:4326"
+  },
+  "time_window": {
+    "start": "2020-08-17T16:00:00Z",
+    "end": "2020-10-03T23:00:00Z",
+    "model_time_step": "1h"
+  },
+  "target_grid": {
+    "crs": "EPSG:3857",
+    "resolution_m": 375.0,
+    "alignment": "upper_left",
+    "resampling_defaults": {
+      "continuous": "bilinear",
+      "categorical": "nearest"
+    }
+  },
+  "sources": [
+    {
+      "id": "viirs_firms",
+      "provider": "NASA FIRMS",
+      "dataset": "VIIRS_SNPP_SP",
+      "source_type": "dynamic",
+      "native_resolution_m": 375.0,
+      "native_temporal_resolution": "hourly",
+      "latency": "historical",
+      "coverage": "global",
+      "license": "Open",
+      "access": {
+        "mode": "api",
+        "url": "https://firms.modaps.eosdis.nasa.gov"
+      },
+      "resampling_method": "max",
+      "source_priority": 1,
+      "variables": [
+        {
+          "name": "frp",
+          "dtype": "float32",
+          "units": "MW",
+          "kind": "continuous"
+        }
+      ]
+    },
+    {
+      "id": "prism_daily",
+      "provider": "PRISM",
+      "dataset": "PRISM Climate",
+      "source_type": "dynamic",
+      "native_resolution_m": 800.0,
+      "native_temporal_resolution": "daily",
+      "latency": "historical",
+      "coverage": "CONUS",
+      "license": "Open",
+      "access": {
+        "mode": "download",
+        "url": "https://prism.oregonstate.edu"
+      },
+      "resampling_method": "bilinear",
+      "source_priority": 10,
+      "variables": [
+        {
+          "name": "tmax",
+          "dtype": "float32",
+          "units": "C",
+          "kind": "continuous"
+        },
+        {
+          "name": "ppt",
+          "dtype": "float32",
+          "units": "mm",
+          "kind": "continuous"
+        }
+      ]
+    },
+    {
+      "id": "landfire",
+      "provider": "LANDFIRE",
+      "dataset": "Fuel Layers",
+      "source_type": "static",
+      "native_resolution_m": 30.0,
+      "native_temporal_resolution": "static",
+      "latency": "historical",
+      "coverage": "CONUS",
+      "license": "Open",
+      "access": {
+        "mode": "download",
+        "url": "https://www.landfire.gov"
+      },
+      "resampling_method": "nearest",
+      "source_priority": 20,
+      "variables": [
+        {
+          "name": "fuel_model",
+          "dtype": "int16",
+          "units": "class_id",
+          "kind": "categorical"
+        }
+      ]
+    }
+  ]
+}

@@ -35,6 +35,11 @@ This repository contains the GOFER workflow (GOES Observed Fire Event Representa
 - FIRMS VIIRS: grid point detections into a GOFER-style JSON.
 - RAWS: download station time series, normalize, and map nearest station to GOES grid.
 
+### E) Higher-resolution planning artifacts
+- `higher_resolution_data_options.md`: source comparison matrix and recommended CONUS upgrade path.
+- `multires_data_contract.md`: versioned manifest v2 schema for multi-resolution covariates.
+- `examples/multires_config.example.json`: starter config for manifest generation.
+
 ## Where to look next
 
 - scripts/README.md: command-line tools and outputs.
@@ -43,3 +48,5 @@ This repository contains the GOFER workflow (GOES Observed Fire Event Representa
 - R/README.md: R post-processing scripts.
 - webapp/README.md: local JSON visualization app.
 - docs/aggregate_regression_report.ipynb: condensed regression report notebook.
+- docs/higher_resolution_data_options.md: data-source research and recommendation.
+- docs/multires_data_contract.md: multiresolution manifest contract.

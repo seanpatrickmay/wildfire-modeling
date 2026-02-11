@@ -127,6 +127,8 @@ See `data/README.md` for a fuller output layout.
 ## Notebooks and Visualization
 
 - `docs/aggregate_regression_report.ipynb` summarizes aggregated regression results.
+- `docs/higher_resolution_data_options.md` documents higher-resolution data candidates and recommendations.
+- `docs/multires_data_contract.md` defines a versioned manifest for multi-resolution covariates.
 - `webapp/` provides a lightweight viewer for GOFER-style JSON time series.
 
 ## Repository Layout
