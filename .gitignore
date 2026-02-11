@@ -50,3 +50,6 @@ node_modules/
 
 # Generated data outputs
 /data/
+
+# Accidental local folders created from SSH-style repo URLs
+/git@github.com:*/
