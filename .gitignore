@@ -1,0 +1,55 @@
+# OS / editor
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+Thumbs.db
+*.swp
+*.swo
+*.swn
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Node / frontend
+node_modules/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Secrets / local env
+.env
+.env.*
+
+# Generated data outputs
+/data/
+
+# Accidental local folders created from SSH-style repo URLs
+/git@github.com:*/
