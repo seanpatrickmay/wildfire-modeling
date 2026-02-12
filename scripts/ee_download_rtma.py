@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -23,6 +24,13 @@ import math
 import rasterio
 
 WEB_MERCATOR_R = 6378137.0
+RETRIABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+
+
+class DownloadError(RuntimeError):
+    def __init__(self, message: str, *, retriable: bool) -> None:
+        super().__init__(message)
+        self.retriable = retriable
 
 
 def mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
@@ -50,6 +58,60 @@ def download_zip(url: str, zip_path: str) -> None:
         shutil.copyfileobj(response, f)
 
 
+def is_retriable_error(code: int | None, body: str) -> bool:
+    if code in RETRIABLE_HTTP_CODES:
+        return True
+    text = body.lower()
+    return (
+        "memory capacity exceeded" in text
+        or '"status": "unavailable"' in text
+        or '"status": "internal"' in text
+        or "internal error has occurred" in text
+    )
+
+
+def download_image_zip_with_retries(
+    img,
+    params: dict,
+    zip_path: str,
+    *,
+    max_attempts: int,
+    retry_backoff_seconds: float,
+) -> None:
+    backoff = retry_backoff_seconds
+    for attempt in range(1, max_attempts + 1):
+        try:
+            url = img.getDownloadURL(params)
+            download_zip(url, zip_path)
+            return
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            retriable = is_retriable_error(exc.code, body)
+            if retriable and attempt < max_attempts:
+                print(
+                    f"EE download retry {attempt}/{max_attempts - 1} "
+                    f"(HTTP {exc.code}); waiting {backoff:.1f}s..."
+                )
+                time.sleep(backoff)
+                backoff *= 2.0
+                continue
+            raise DownloadError(
+                f"EE download error (HTTP {exc.code}): {body}",
+                retriable=retriable,
+            ) from exc
+        except urllib.error.URLError as exc:
+            retriable = attempt < max_attempts
+            if retriable:
+                print(
+                    f"EE download retry {attempt}/{max_attempts - 1} "
+                    f"(URL error: {exc.reason}); waiting {backoff:.1f}s..."
+                )
+                time.sleep(backoff)
+                backoff *= 2.0
+                continue
+            raise DownloadError(f"EE URL error: {exc}", retriable=True) from exc
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download RTMA to GeoTIFF chunks")
     parser.add_argument("--goes-tif", required=True, help="Template GOES GeoTIFF")
@@ -63,6 +125,24 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--chunk-hours", type=int, default=168)
     parser.add_argument("--project", default=None)
+    parser.add_argument(
+        "--max-download-attempts",
+        type=int,
+        default=5,
+        help="Retries per EE download request before giving up (default: 5).",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=2.0,
+        help="Initial retry backoff for EE request retries (default: 2.0).",
+    )
+    parser.add_argument(
+        "--min-window-hours",
+        type=int,
+        default=1,
+        help="Smallest adaptive RTMA window size in hours (default: 1).",
+    )
     args = parser.parse_args()
 
     try:
@@ -127,23 +207,23 @@ def main() -> None:
     ]
     ee_region = ee.Geometry.Polygon(region_wgs84, proj="EPSG:4326", geodesic=False)
 
-    for chunk_idx, (chunk_start, chunk_end) in enumerate(
-        chunks_time(start_dt, end_dt, args.chunk_hours), start=1
-    ):
-        # EE filterDate end is exclusive; add 1 hour to include last hour
+    windows = list(chunks_time(start_dt, end_dt, args.chunk_hours))
+    part_idx = 1
+    manifest["time_steps"] = []
+
+    while windows:
+        chunk_start, chunk_end = windows.pop(0)
+        chunk_hours = int((chunk_end - chunk_start).total_seconds() // 3600) + 1
+
         ee_start = chunk_start.isoformat()
         ee_end = (chunk_end + timedelta(hours=1)).isoformat()
         col = rtma.filterDate(ee_start, ee_end)
 
-        # Build time steps list for this chunk
-        cur = chunk_start
         chunk_steps = []
+        cur = chunk_start
         while cur <= chunk_end:
             chunk_steps.append(cur.strftime("%Y-%m-%dT%H:00:00Z"))
             cur += timedelta(hours=1)
-        if chunk_idx == 1:
-            manifest["time_steps"] = []
-        manifest["time_steps"].extend(chunk_steps)
 
         params = {
             "crs": "EPSG:3857",
@@ -152,28 +232,58 @@ def main() -> None:
             "filePerBand": False,
         }
 
-        for var in variables:
-            img = col.select(var).toBands().clip(ee_region)
-            filename = f"rtma_{var}_part{chunk_idx:02d}.tif"
-            out_path = os.path.join(output_dir, filename)
+        print(
+            f"Downloading RTMA window part{part_idx:03d}: "
+            f"{chunk_steps[0]} .. {chunk_steps[-1]} ({chunk_hours}h)"
+        )
+        try:
+            tmp_outputs: dict[str, str] = {}
             with tempfile.TemporaryDirectory() as tmpdir:
-                zip_path = os.path.join(tmpdir, "download.zip")
-                try:
-                    url = img.getDownloadURL(params)
-                    download_zip(url, zip_path)
-                except urllib.error.HTTPError as exc:
-                    body = exc.read().decode("utf-8", errors="replace")
-                    raise SystemExit(f"EE download error: {body}")
+                for var in variables:
+                    img = col.select(var).toBands().clip(ee_region)
+                    zip_path = os.path.join(tmpdir, f"{var}.zip")
+                    download_image_zip_with_retries(
+                        img,
+                        params,
+                        zip_path,
+                        max_attempts=args.max_download_attempts,
+                        retry_backoff_seconds=args.retry_backoff_seconds,
+                    )
 
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    tif_names = [n for n in zf.namelist() if n.lower().endswith(".tif")]
-                    if not tif_names:
-                        raise SystemExit("No .tif in download")
-                    zf.extract(tif_names[0], tmpdir)
-                    shutil.move(os.path.join(tmpdir, tif_names[0]), out_path)
+                    with zipfile.ZipFile(zip_path, "r") as zf:
+                        tif_names = [n for n in zf.namelist() if n.lower().endswith(".tif")]
+                        if not tif_names:
+                            raise DownloadError("No .tif in RTMA download archive.", retriable=False)
+                        zf.extract(tif_names[0], tmpdir)
+                        extracted_path = os.path.join(tmpdir, tif_names[0])
+                        unique_var_path = os.path.join(tmpdir, f"{var}.tif")
+                        shutil.move(extracted_path, unique_var_path)
+                        tmp_outputs[var] = unique_var_path
 
-            manifest["files"][var].append(out_path)
-            print(f"Saved: {out_path}")
+                for var in variables:
+                    filename = f"rtma_{var}_part{part_idx:03d}.tif"
+                    out_path = os.path.join(output_dir, filename)
+                    shutil.move(tmp_outputs[var], out_path)
+                    manifest["files"][var].append(out_path)
+                    print(f"Saved: {out_path}")
+
+            manifest["time_steps"].extend(chunk_steps)
+            part_idx += 1
+        except DownloadError as exc:
+            can_split = chunk_hours > max(1, args.min_window_hours)
+            if exc.retriable and can_split:
+                left_hours = chunk_hours // 2
+                right_hours = chunk_hours - left_hours
+                left_end = chunk_start + timedelta(hours=left_hours - 1)
+                right_start = left_end + timedelta(hours=1)
+                right_end = right_start + timedelta(hours=right_hours - 1)
+                print(
+                    "Window failed with retriable error; splitting into "
+                    f"{left_hours}h and {right_hours}h windows."
+                )
+                windows = [(chunk_start, left_end), (right_start, right_end)] + windows
+                continue
+            raise SystemExit(str(exc))
 
     manifest_path = os.path.join(output_dir, "rtma_manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:

@@ -25,9 +25,18 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import urllib.request
 import urllib.error
 import zipfile
+
+RETRIABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+
+
+class DownloadError(RuntimeError):
+    def __init__(self, message: str, *, retriable: bool) -> None:
+        super().__init__(message)
+        self.retriable = retriable
 
 
 def build_asset_id(fire_name: str, year: int, source: str) -> str:
@@ -42,16 +51,24 @@ def build_asset_id(fire_name: str, year: int, source: str) -> str:
 
 
 def download_zip(url: str, zip_path: str) -> None:
-    try:
-        with urllib.request.urlopen(url) as response, open(zip_path, "wb") as f:
-            shutil.copyfileobj(response, f)
-    except urllib.error.HTTPError as exc:  # pragma: no cover
-        try:
-            body = exc.read().decode("utf-8", errors="replace")
-            print(f"HTTP error body:\\n{body}", file=sys.stderr)
-        except Exception:
-            pass
-        raise
+    with urllib.request.urlopen(url) as response, open(zip_path, "wb") as f:
+        shutil.copyfileobj(response, f)
+
+
+def should_retry(code: int | None, body: str) -> bool:
+    if code in RETRIABLE_HTTP_CODES:
+        return True
+    text = body.lower()
+    return (
+        "internal error has occurred" in text
+        or "memory capacity exceeded" in text
+        or '"status": "internal"' in text
+        or '"status": "unavailable"' in text
+    )
+
+
+def is_projection_error(code: int | None, body: str) -> bool:
+    return code == 400 and "unable to write geotiffs in projection" in body.lower()
 
 
 def main() -> None:
@@ -111,6 +128,24 @@ def main() -> None:
         "--keep-zip",
         action="store_true",
         help="Keep the downloaded zip file next to the output.",
+    )
+    parser.add_argument(
+        "--max-download-attempts",
+        type=int,
+        default=5,
+        help="Retries per EE download request before failing (default: 5).",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=2.0,
+        help="Initial retry backoff seconds for EE retries (default: 2.0).",
+    )
+    parser.add_argument(
+        "--min-chunk-size",
+        type=int,
+        default=32,
+        help="Smallest adaptive band chunk size when splitting failing requests (default: 32).",
     )
     args = parser.parse_args()
 
@@ -177,49 +212,104 @@ def main() -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     def download_image(img, out_path):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = os.path.join(tmpdir, "download.zip")
-            try:
-                url = img.getDownloadURL(params)
-                download_zip(url, zip_path)
-            except urllib.error.HTTPError as exc:
-                if args.crs or exc.code != 400:
-                    raise
-                fallback_crs = "EPSG:3857"
-                print(
-                    f"Retrying with CRS override: {fallback_crs}",
-                    file=sys.stderr,
-                )
-                params["crs"] = fallback_crs
-                url = img.getDownloadURL(params)
-                download_zip(url, zip_path)
+        download_params = dict(params)
+        backoff = args.retry_backoff_seconds
+        projection_retry_done = bool(args.crs)
 
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                tif_names = [name for name in zf.namelist() if name.lower().endswith(".tif")]
-                if not tif_names:
-                    raise RuntimeError("No .tif found in downloaded archive")
-                tif_name = tif_names[0]
-                zf.extract(tif_name, tmpdir)
-                extracted_path = os.path.join(tmpdir, tif_name)
-                shutil.move(extracted_path, out_path)
+        for attempt in range(1, args.max_download_attempts + 1):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = os.path.join(tmpdir, "download.zip")
+                try:
+                    url = img.getDownloadURL(download_params)
+                    download_zip(url, zip_path)
+                except urllib.error.HTTPError as exc:
+                    body = exc.read().decode("utf-8", errors="replace")
+                    print(f"HTTP error body:\\n{body}", file=sys.stderr)
 
-            if args.keep_zip:
-                zip_keep_path = os.path.splitext(out_path)[0] + ".zip"
-                shutil.copyfile(zip_path, zip_keep_path)
+                    if not projection_retry_done and is_projection_error(exc.code, body):
+                        fallback_crs = "EPSG:3857"
+                        print(f"Retrying with CRS override: {fallback_crs}", file=sys.stderr)
+                        download_params["crs"] = fallback_crs
+                        projection_retry_done = True
+                        continue
+
+                    retriable = should_retry(exc.code, body)
+                    if retriable and attempt < args.max_download_attempts:
+                        print(
+                            f"Retrying download attempt {attempt}/{args.max_download_attempts - 1} "
+                            f"after HTTP {exc.code}; waiting {backoff:.1f}s...",
+                            file=sys.stderr,
+                        )
+                        time.sleep(backoff)
+                        backoff *= 2.0
+                        continue
+
+                    raise DownloadError(
+                        f"HTTP {exc.code}: {body}",
+                        retriable=retriable,
+                    ) from exc
+                except urllib.error.URLError as exc:
+                    if attempt < args.max_download_attempts:
+                        print(
+                            f"Retrying URL error attempt {attempt}/{args.max_download_attempts - 1} "
+                            f"({exc.reason}); waiting {backoff:.1f}s...",
+                            file=sys.stderr,
+                        )
+                        time.sleep(backoff)
+                        backoff *= 2.0
+                        continue
+                    raise DownloadError(f"URL error: {exc}", retriable=True) from exc
+
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    tif_names = [name for name in zf.namelist() if name.lower().endswith(".tif")]
+                    if not tif_names:
+                        raise DownloadError("No .tif found in downloaded archive", retriable=False)
+                    tif_name = tif_names[0]
+                    zf.extract(tif_name, tmpdir)
+                    extracted_path = os.path.join(tmpdir, tif_name)
+                    shutil.move(extracted_path, out_path)
+
+                if args.keep_zip:
+                    zip_keep_path = os.path.splitext(out_path)[0] + ".zip"
+                    shutil.copyfile(zip_path, zip_keep_path)
+                return
 
     if chunk_size:
         base, ext = os.path.splitext(output_path)
-        chunks = [
+        pending_chunks = [
             band_names[i : i + chunk_size]
             for i in range(0, len(band_names), chunk_size)
         ]
-        for idx, chunk in enumerate(chunks, start=1):
+        idx = 1
+        while pending_chunks:
+            chunk = pending_chunks.pop(0)
             out_path = f"{base}_part{idx:02d}{ext or '.tif'}"
             print(f"Downloading bands {chunk[0]}..{chunk[-1]} -> {out_path}")
-            download_image(image.select(chunk), out_path)
-            print(f"Saved: {out_path}")
+            try:
+                download_image(image.select(chunk), out_path)
+                print(f"Saved: {out_path}")
+                idx += 1
+            except DownloadError as exc:
+                can_split = len(chunk) > args.min_chunk_size
+                if exc.retriable and can_split:
+                    mid = len(chunk) // 2
+                    left = chunk[:mid]
+                    right = chunk[mid:]
+                    print(
+                        "Chunk failed with retriable error; splitting "
+                        f"{len(chunk)} bands into {len(left)} and {len(right)}.",
+                        file=sys.stderr,
+                    )
+                    pending_chunks = [left, right] + pending_chunks
+                    continue
+                raise SystemExit(
+                    f"Failed downloading band chunk {chunk[0]}..{chunk[-1]}: {exc}"
+                )
     else:
-        download_image(image, output_path)
+        try:
+            download_image(image, output_path)
+        except DownloadError as exc:
+            raise SystemExit(f"Failed downloading image: {exc}")
         print(f"Saved: {output_path}")
 
 

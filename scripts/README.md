@@ -47,6 +47,25 @@ Convert RTMA GeoTIFF chunks into a single JSON with optional normalization.
 - Example:
   - python3 scripts/rtma_to_json.py --manifest data/rtma/august/rtma_manifest.json --output data/rtma/august/rtma_normalized.json --normalize zscore
 
+## download_all_28_fires.py
+
+Download and build the full 28-fire GOFER dataset under `data/multi_fire` using the existing single-fire scripts, with strong reuse/resume behavior.
+
+- Inputs: optional fire subset, GOES source (`east`/`west`), RTMA chunk size, normalization mode.
+- Outputs per fire:
+  - `<fire>/<fire>_<year>_GOESEast|GOESWest_MaxConf[_partXX].tif`
+  - `<fire>/<fire>_<year>_GOESEast|GOESWest_MaxConf.json`
+  - `<fire>/rtma/rtma_manifest.json`
+  - `<fire>/rtma/rtma_normalized.json`
+- Reuse/resume:
+  - Reuses valid GOES/RTMA outputs by default.
+  - Rebuilds downstream files locally when possible.
+  - Downloads only missing/invalid artifacts (unless `--overwrite`).
+- Example:
+  - python3 scripts/download_all_28_fires.py
+  - python3 scripts/download_all_28_fires.py --fires "Creek,Dixie"
+  - python3 scripts/download_all_28_fires.py --dry-run
+
 ## firms_viirs_to_json.py
 
 Download FIRMS VIIRS data for a bbox and date range, then grid into GOFER-style JSON.
