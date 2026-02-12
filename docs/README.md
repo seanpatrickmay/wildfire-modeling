@@ -8,7 +8,7 @@ This repository contains the GOFER workflow (GOES Observed Fire Event Representa
 2) Download GOES confidence stacks for a fire.
 3) Convert the GeoTIFF stacks to JSON.
 4) Download RTMA hourly meteorology aligned to the GOES grid.
-5) Run regressions (single fire or aggregated).
+5) Run regressions (single fire) and notebook-driven multi-fire logistic analysis.
 
 ## Key data sources
 
@@ -29,7 +29,7 @@ This repository contains the GOFER workflow (GOES Observed Fire Event Representa
 
 ### C) Regression analysis
 - Single-fire regressions: spread + continuation models.
-- Aggregated regressions: combine multiple fires into one report.
+- Multi-fire logistic runs: use `docs/neighbor_cell_confidence_regression.ipynb`.
 
 ### D) Optional data
 - FIRMS VIIRS: grid point detections into a GOFER-style JSON.
@@ -47,6 +47,6 @@ This repository contains the GOFER workflow (GOES Observed Fire Event Representa
 - gee/README.md: Earth Engine scripts and assets.
 - R/README.md: R post-processing scripts.
 - webapp/README.md: local JSON visualization app.
-- docs/aggregate_regression_report.ipynb: condensed regression report notebook.
+- docs/neighbor_cell_confidence_regression.ipynb: neighbor-cell logistic notebook with single-fire and multi-fire blocks.
 - docs/higher_resolution_data_options.md: data-source research and recommendation.
 - docs/multires_data_contract.md: multiresolution manifest contract.

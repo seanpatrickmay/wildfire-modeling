@@ -92,23 +92,10 @@ Run spread and continuation logistic regressions for a single fire.
 - Example:
   - python3 scripts/run_locational_regressions.py --goes-json data/ee_exports/August_Complex_2020_GOESEast_MaxConf.json --rtma-manifest data/rtma/august_24h/rtma_manifest.json --threshold 0.1 --output-dir data/analysis/august_locational --neg-ratio 5 --max-samples 200000 --prob-hours 3
 
-## run_locational_regressions_aggregate.py
+## Multi-fire logistic analysis
 
-Run aggregated regressions across multiple fires using a config JSON.
-
-- Inputs: aggregate_config.json with GOES JSON paths and RTMA manifests.
-- Outputs: aggregate_regression_report.json.
-- Example:
-  - python3 scripts/run_locational_regressions_aggregate.py --config data/multi_fire/aggregate_config.json --threshold 0.1 --neg-ratio 0 --max-samples-per-fire 0 --output data/multi_fire/aggregate_regression_report.json
-
-## run_multi_fire_pipeline.py
-
-End-to-end multi-fire pipeline: download GOES + RTMA, convert to JSON, normalize RTMA, and run aggregated regression.
-
-- Inputs: none (uses fire metadata in gee/largeFires_metadata.js).
-- Outputs: per-fire data under data/multi_fire and aggregate_regression_report.json.
-- Example:
-  - python3 scripts/run_multi_fire_pipeline.py --output-dir data/multi_fire --chunk-size 256 --chunk-hours 24 --neg-ratio 0 --max-samples-per-fire 0
+Multi-fire logistic runs are handled in `docs/neighbor_cell_confidence_regression.ipynb`
+under the **Multi-Fire Logistic Runs** section.
 
 ## build_multires_manifest.py
 

@@ -6,7 +6,7 @@ This repository is a local data-ingestion and modeling workflow used to:
 - normalize local credentials for optional APIs via environment variables or `.env`
 - convert gridded data into GOFER-style JSON time series
 - run locational logistic regressions (spread + continuation)
-- summarize results in regression reports and Jupyter notebooks
+- run neighbor-cell logistic regression notebooks (single-fire and multi-fire)
 
 If you are looking for the GOFER product generation pipeline itself, it lives under `gee/` (Earth Engine) and `R/` (post-processing). The day-to-day work in this repo is the data download + regression analysis pipeline.
 
@@ -16,7 +16,7 @@ If you are looking for the GOFER product generation pipeline itself, it lives un
 2. Convert GOES stacks into GOFER-style JSON.
 3. Download RTMA hourly meteorology aligned to the GOES grid.
 4. Normalize RTMA into a single JSON (optional but commonly used).
-5. Run locational logistic regressions (single fire or aggregated).
+5. Run locational logistic regressions.
 6. Review regression reports and notebooks.
 
 ## Data Sources
@@ -96,23 +96,10 @@ python3 scripts/run_locational_regressions.py \
   --output-dir data/analysis/kincade
 ```
 
-## Aggregate (Multi-Fire) Workflow
+## Multi-Fire Workflow
 
-Run the end-to-end multi-fire pipeline (download, convert, normalize, regress):
-
-```bash
-python3 scripts/run_multi_fire_pipeline.py \
-  --output-dir data/multi_fire --chunk-size 256 --chunk-hours 24
-```
-
-Or build your own config and run the aggregate regression directly:
-
-```bash
-python3 scripts/run_locational_regressions_aggregate.py \
-  --config data/multi_fire/aggregate_config.json \
-  --threshold 0.1 --neg-ratio 0 --max-samples-per-fire 0 \
-  --output data/multi_fire/aggregate_regression_report.json
-```
+Use `docs/neighbor_cell_confidence_regression.ipynb` and run the **Multi-Fire Logistic Runs**
+section to execute logistic models across all fires under `data/multi_fire/*`.
 
 ## Outputs
 
@@ -120,13 +107,12 @@ python3 scripts/run_locational_regressions_aggregate.py \
 - `data/analysis/<fire>/regression_report.txt`
 - `data/analysis/<fire>/probability_maps_spread.json`
 - `data/analysis/<fire>/probability_maps_continue.json`
-- `data/multi_fire/aggregate_regression_report.json`
 
 See `data/README.md` for a fuller output layout.
 
 ## Notebooks and Visualization
 
-- `docs/aggregate_regression_report.ipynb` summarizes aggregated regression results.
+- `docs/neighbor_cell_confidence_regression.ipynb` contains single-fire and multi-fire logistic workflows.
 - `docs/higher_resolution_data_options.md` documents higher-resolution data candidates and recommendations.
 - `docs/multires_data_contract.md` defines a versioned manifest for multi-resolution covariates.
 - `webapp/` provides a lightweight viewer for GOFER-style JSON time series.

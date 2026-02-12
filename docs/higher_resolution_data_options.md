@@ -58,7 +58,7 @@ Adopt a multi-resolution stack with:
 - `scripts/ee_download_confidence_stack.py`
 - `scripts/ee_download_rtma.py`
 - `scripts/run_locational_regressions.py`
-- `scripts/run_locational_regressions_aggregate.py`
+- `docs/neighbor_cell_confidence_regression.ipynb` (single-fire + multi-fire logistic blocks)
 
 ### New multiresolution path
 Use a versioned manifest (see `docs/multires_data_contract.md`) produced/validated by:
