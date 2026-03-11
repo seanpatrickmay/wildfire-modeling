@@ -158,7 +158,7 @@ def main() -> None:
 
     try:
         import ee  # type: ignore
-    except Exception as exc:  # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
         print("Missing dependency: earthengine-api", file=sys.stderr)
         print("Install with: pip install earthengine-api", file=sys.stderr)
         raise exc
@@ -169,6 +169,8 @@ def main() -> None:
         else:
             ee.Initialize()
     except Exception:
+        # ee.Initialize() can raise ee.EEException or RuntimeError depending on version.
+        # Print a helpful message and re-raise regardless of exception type.
         print(
             "Earth Engine init failed. If you see a project warning, set a project with "
             "`earthengine set_project YOUR_PROJECT_ID` or pass --project YOUR_PROJECT_ID.",

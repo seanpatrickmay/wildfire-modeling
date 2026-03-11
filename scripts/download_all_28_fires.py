@@ -164,7 +164,7 @@ def is_valid_goes_json(path: Path) -> bool:
         time_steps = metadata.get("time_steps", [])
         data = payload.get("data", [])
         return isinstance(time_steps, list) and len(time_steps) > 0 and isinstance(data, list) and len(data) > 0
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return False
 
 
@@ -231,7 +231,7 @@ def is_valid_rtma_manifest(
                 if resolved is None:
                     return False
         return True
-    except Exception:
+    except (json.JSONDecodeError, OSError, ValueError):
         return False
 
 
@@ -243,7 +243,7 @@ def is_valid_rtma_normalized(path: Path) -> bool:
         metadata = payload.get("metadata")
         data = payload.get("data")
         return isinstance(metadata, dict) and isinstance(data, dict) and len(data) > 0
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return False
 
 

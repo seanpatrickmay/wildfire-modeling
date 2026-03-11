@@ -212,7 +212,7 @@ def main() -> None:
         try:
             lat = float(row["latitude"])
             lon = float(row["longitude"])
-        except Exception:
+        except (KeyError, ValueError, TypeError):
             continue
 
         tkey = hour_key(row["acq_date"], row["acq_time"])
@@ -231,7 +231,7 @@ def main() -> None:
         else:
             try:
                 val = float(row[args.value])
-            except Exception:
+            except (KeyError, ValueError, TypeError):
                 continue
 
         if args.agg == "max":
