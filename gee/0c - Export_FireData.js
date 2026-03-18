@@ -6,43 +6,13 @@
 // @author Tianjia Liu (embrslab@gmail.com)
 // =========================================
 
-var inFiresList = [
-  ['Kincade','2019'],
-  ['Walker','2019'],
-  ['August Complex','2020'],
-  ['Bobcat','2020'],
-  ['Creek','2020'],
-  ['CZU Lightning Complex','2020'],
-  ['Dolan','2020'],
-  ['Glass','2020'],
-  ['July Complex','2020'],
-  ['LNU Lightning Complex','2020'],
-  ['North Complex','2020'],
-  ['Red Salmon Complex','2020'],
-  ['SCU Lightning Complex','2020'],
-  ['Slater and Devil','2020'],
-  ['SQF Complex','2020'],
-  ['W-5 Cold Springs','2020'],
-  ['Zogg','2020'],
-  ['Antelope','2021'],
-  ['Beckwourth Complex','2021'],
-  ['Caldor','2021'],
-  ['Dixie','2021'],
-  ['KNP Complex','2021'],
-  ['McCash','2021'],
-  ['McFarland','2021'],
-  ['Monument','2021'],
-  ['River Complex','2021'],
-  ['Tamarack','2021'],
-  ['Windy','2021']
-];
-
 // Metadata
 var fireInfo = require('users/embrslab/GOFER:largeFires_metadata.js');
 var projFolder = fireInfo.projFolder;
 var yrList = fireInfo.yrList;
 var fireYrList = fireInfo.fireYrList;
 var fireParamsList = fireInfo.fireParamsList;
+var inFiresList = fireInfo.inFiresList;
 
 var fireInfoAll = [];
 for (var fireIdx = 0; fireIdx < inFiresList.length; fireIdx++) {

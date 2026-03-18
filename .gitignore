@@ -44,6 +44,9 @@ node_modules/
 .RData
 .Rproj.user/
 
+# Claude Code
+.claude/
+
 # Secrets / local env
 .env
 .env.*

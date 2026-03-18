@@ -18,6 +18,7 @@ Examples:
   python3 scripts/download_all_28_fires.py --fires "Creek,Dixie"
   python3 scripts/download_all_28_fires.py --dry-run
   python3 scripts/download_all_28_fires.py --overwrite --chunk-hours 24
+  python3 scripts/download_all_28_fires.py --rtma-lookback-hours 720
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ def is_valid_goes_json(path: Path) -> bool:
         time_steps = metadata.get("time_steps", [])
         data = payload.get("data", [])
         return isinstance(time_steps, list) and len(time_steps) > 0 and isinstance(data, list) and len(data) > 0
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return False
 
 
@@ -186,7 +187,13 @@ def resolve_manifest_file_path(path_str: str, repo_root: Path, manifest_dir: Pat
     return None
 
 
-def is_valid_rtma_manifest(manifest_path: Path, repo_root: Path) -> bool:
+def is_valid_rtma_manifest(
+    manifest_path: Path,
+    repo_root: Path,
+    *,
+    required_start_iso: str | None = None,
+    required_end_iso: str | None = None,
+) -> bool:
     if not manifest_path.exists():
         return False
     try:
@@ -194,12 +201,24 @@ def is_valid_rtma_manifest(manifest_path: Path, repo_root: Path) -> bool:
         variables = payload.get("variables", [])
         files = payload.get("files", {})
         time_steps = payload.get("time_steps", [])
+        manifest_start = payload.get("start")
+        manifest_end = payload.get("end")
         if not isinstance(variables, list) or not variables:
             return False
         if not isinstance(files, dict) or not files:
             return False
         if not isinstance(time_steps, list) or not time_steps:
             return False
+        if required_start_iso is not None:
+            if not isinstance(manifest_start, str):
+                return False
+            if parse_iso(manifest_start) > parse_iso(required_start_iso):
+                return False
+        if required_end_iso is not None:
+            if not isinstance(manifest_end, str):
+                return False
+            if parse_iso(manifest_end) < parse_iso(required_end_iso):
+                return False
         manifest_dir = manifest_path.parent
         for var in variables:
             paths = files.get(var)
@@ -212,7 +231,7 @@ def is_valid_rtma_manifest(manifest_path: Path, repo_root: Path) -> bool:
                 if resolved is None:
                     return False
         return True
-    except Exception:
+    except (json.JSONDecodeError, OSError, ValueError):
         return False
 
 
@@ -224,7 +243,7 @@ def is_valid_rtma_normalized(path: Path) -> bool:
         metadata = payload.get("metadata")
         data = payload.get("data")
         return isinstance(metadata, dict) and isinstance(data, dict) and len(data) > 0
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return False
 
 
@@ -364,27 +383,36 @@ def process_fire(
     else:
         status["reused"].append("goes_json")
 
+    if is_valid_goes_json(goes_json):
+        goes_start_iso, goes_end_iso = parse_goes_time_bounds(goes_json)
+    else:
+        goes_start_iso = parse_catalog_start_to_iso(fire.start_utc_hour)
+        goes_end_iso = to_utc_hour_z(parse_iso(goes_start_iso) + timedelta(hours=1))
+    rtma_start_iso = to_utc_hour_z(parse_iso(goes_start_iso) - timedelta(hours=int(args.rtma_lookback_hours)))
+    rtma_end_iso = goes_end_iso
+
     # Step 3: RTMA download (requires valid GOES JSON + template tif).
-    rtma_manifest_valid = is_valid_rtma_manifest(rtma_manifest, repo_root)
+    rtma_manifest_valid = is_valid_rtma_manifest(
+        rtma_manifest,
+        repo_root,
+        required_start_iso=rtma_start_iso,
+        required_end_iso=rtma_end_iso,
+    )
+    rtma_manifest_updated = False
     if args.overwrite or not rtma_manifest_valid:
         if not is_valid_goes_json(goes_json) and not args.dry_run:
             raise RuntimeError(f"Cannot build RTMA for {fire.name}: GOES JSON invalid.")
         if not goes_tifs:
             raise RuntimeError(f"Cannot build RTMA for {fire.name}: no GOES TIFF template.")
-        if is_valid_goes_json(goes_json):
-            start_iso, end_iso = parse_goes_time_bounds(goes_json)
-        else:
-            start_iso = parse_catalog_start_to_iso(fire.start_utc_hour)
-            end_iso = to_utc_hour_z(parse_iso(start_iso) + timedelta(hours=1))
         cmd = [
             sys.executable,
             str(repo_root / "scripts" / "ee_download_rtma.py"),
             "--goes-tif",
             str(goes_tifs[0]),
             "--start",
-            start_iso,
+            rtma_start_iso,
             "--end",
-            end_iso,
+            rtma_end_iso,
             "--output-dir",
             str(rtma_dir),
             "--chunk-hours",
@@ -394,13 +422,19 @@ def process_fire(
             cmd.extend(["--project", args.project])
         run_cmd(cmd, args.dry_run)
         status["downloaded"].append("rtma_manifest_and_chunks")
+        rtma_manifest_updated = True
     else:
         status["reused"].append("rtma_manifest_and_chunks")
 
     # Step 4: RTMA normalized JSON (rebuild locally when needed).
     rtma_norm_valid = is_valid_rtma_normalized(rtma_normalized)
-    if args.overwrite or not rtma_norm_valid:
-        if not is_valid_rtma_manifest(rtma_manifest, repo_root) and not args.dry_run:
+    if args.overwrite or rtma_manifest_updated or not rtma_norm_valid:
+        if not is_valid_rtma_manifest(
+            rtma_manifest,
+            repo_root,
+            required_start_iso=rtma_start_iso,
+            required_end_iso=rtma_end_iso,
+        ) and not args.dry_run:
             raise RuntimeError(f"Cannot build rtma_normalized.json for {fire.name}: manifest invalid.")
         cmd = [
             sys.executable,
@@ -458,6 +492,12 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         help="RTMA chunk size in hours (default: 24).",
     )
     parser.add_argument(
+        "--rtma-lookback-hours",
+        type=int,
+        default=24 * 30,
+        help="Extra RTMA history to fetch before GOES start, in hours (default: 720).",
+    )
+    parser.add_argument(
         "--normalize",
         default="zscore",
         choices=["zscore", "minmax", "none"],
@@ -511,6 +551,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(f"Output root: {args.output_root}")
     print(f"Selected fires: {len(fires)}")
     print(f"Source: {args.source}")
+    print(f"RTMA lookback hours: {args.rtma_lookback_hours}")
     print(f"Dry run: {args.dry_run}")
     print(f"Overwrite: {args.overwrite}")
     print(f"Retries per fire: {args.fire_retries}")

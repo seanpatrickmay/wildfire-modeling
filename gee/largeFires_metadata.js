@@ -559,10 +559,21 @@ var confidenceThreshList = {
   'W': 0.83 // GOFER-West
 };
 
+// Build flat [fireName, year] list from fireYrList for use by export scripts
+var inFiresList = [];
+for (var yi = 0; yi < yrList.length; yi++) {
+  var yr = yrList[yi];
+  var names = fireYrList[yr];
+  for (var fi = 0; fi < names.length; fi++) {
+    inFiresList.push([names[fi], yr]);
+  }
+}
+
 exports.projFolder = projFolder;
 exports.yrList = yrList;
 exports.fireYrList = fireYrList;
 exports.fireParamsList = fireParamsList;
+exports.inFiresList = inFiresList;
 exports.timeZoneList = timeZoneList;
 exports.timeZoneList_GMT = timeZoneList_GMT;
 exports.confidenceThreshList = confidenceThreshList;

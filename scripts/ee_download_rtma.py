@@ -147,7 +147,7 @@ def main() -> None:
 
     try:
         import ee  # type: ignore
-    except Exception as exc:
+    except ImportError as exc:
         raise SystemExit("Missing earthengine-api. Install with: pip install earthengine-api") from exc
 
     if args.project:
