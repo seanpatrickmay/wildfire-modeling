@@ -37,6 +37,7 @@ BASE_VAR_ORDER: list[str] = [
 ]
 
 DISCOUNTED_RAIN_FEATURE_NAME = "discounted_rain_30d"
+NDVI_FEATURE_NAME = "ndvi"
 RTMA_VARS_REQUIRED = ["TMP", "WIND", "WDIR", "SPFH", "ACPC01"]
 
 
@@ -46,6 +47,7 @@ class FeatureSchema:
     var_order: list[str]
     n_features: int
     include_discounted_rain: bool
+    include_ndvi: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,16 @@ def load_goes_times(goes_meta: dict[str, Any], goes_conf: np.ndarray) -> list[st
         raise ValueError("GOES metadata has no usable time_steps.")
 
     return goes_time_steps
+
+
+def load_ndvi_grid(fire_dir: Path, fire_name: str) -> np.ndarray | None:
+    """Load the pre-fire NDVI grid for a fire, or None if unavailable."""
+    ndvi_path = fire_dir / f"{fire_name}_ndvi.json"
+    if not ndvi_path.exists():
+        return None
+    with ndvi_path.open("r", encoding="utf-8") as f:
+        ndvi_json = json.load(f)
+    return np.array(ndvi_json["data"], dtype=np.float32)
 
 
 def discover_fire_entries(repo_root: Path) -> list[dict[str, Any]]:
@@ -250,10 +262,12 @@ def split_validation_fire_entries(
     return inner_train_entries, val_entries
 
 
-def build_feature_schema(include_discounted_rain: bool = True) -> FeatureSchema:
+def build_feature_schema(include_discounted_rain: bool = True, include_ndvi: bool = False) -> FeatureSchema:
     var_order = list(BASE_VAR_ORDER)
     if include_discounted_rain:
         var_order.insert(5, DISCOUNTED_RAIN_FEATURE_NAME)
+    if include_ndvi:
+        var_order.append(NDVI_FEATURE_NAME)
 
     feature_names: list[str] = []
     for offset_name, _, _ in CELL_OFFSETS:
@@ -265,6 +279,7 @@ def build_feature_schema(include_discounted_rain: bool = True) -> FeatureSchema:
         var_order=var_order,
         n_features=len(feature_names),
         include_discounted_rain=include_discounted_rain,
+        include_ndvi=include_ndvi,
     )
 
 
@@ -406,6 +421,7 @@ def build_hour_samples(
     conf_t: np.ndarray,
     conf_t1: np.ndarray,
     rtma_hour: dict[str, np.ndarray],
+    ndvi_grid: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     height, width = conf_t.shape
     if height < 3 or width < 3:
@@ -414,6 +430,9 @@ def build_hour_samples(
     discounted_rain = rtma_hour.get(DISCOUNTED_RAIN_FEATURE_NAME)
     if feature_schema.include_discounted_rain and discounted_rain is None:
         raise KeyError(f"Missing {DISCOUNTED_RAIN_FEATURE_NAME} in RTMA hour payload.")
+
+    if feature_schema.include_ndvi and ndvi_grid is None:
+        raise KeyError("NDVI feature requested but ndvi_grid is None.")
 
     y = conf_t1[1:-1, 1:-1].astype(np.float64)
     feature_blocks: list[np.ndarray] = []
@@ -444,6 +463,8 @@ def build_hour_samples(
         if feature_schema.include_discounted_rain:
             feature_blocks.append(discounted_rain[ys, xs].astype(np.float64))
         feature_blocks.extend([wdir_sin_cell, wdir_cos_cell])
+        if feature_schema.include_ndvi:
+            feature_blocks.append(ndvi_grid[ys, xs].astype(np.float64))
 
     X = np.stack(feature_blocks, axis=-1).reshape(-1, feature_schema.n_features)
     y = y.reshape(-1)
@@ -516,7 +537,7 @@ def iter_aligned_hours_for_fire(
             )
 
 
-def load_fire_entry_context(entry: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+def load_fire_entry_context(entry: dict[str, Any], repo_root: Path, *, include_ndvi: bool = False) -> dict[str, Any]:
     with Path(entry["goes_json"]).open("r", encoding="utf-8") as goes_file:
         goes_json = json.load(goes_file)
     with Path(entry["rtma_manifest"]).open("r", encoding="utf-8") as rtma_file:
@@ -530,6 +551,11 @@ def load_fire_entry_context(entry: dict[str, Any], repo_root: Path) -> dict[str,
     goes_times = load_goes_times(goes_meta, goes_conf)
     goes_time_index = {time_str: idx for idx, time_str in enumerate(goes_times)}
 
+    ndvi_grid = None
+    if include_ndvi:
+        fire_dir = Path(entry["goes_json"]).parent
+        ndvi_grid = load_ndvi_grid(fire_dir, entry["fire_name"])
+
     return {
         "repo_root": repo_root,
         "fire_name": entry["fire_name"],
@@ -541,6 +567,7 @@ def load_fire_entry_context(entry: dict[str, Any], repo_root: Path) -> dict[str,
         "goes_time_index": goes_time_index,
         "rtma_manifest": rtma_manifest,
         "rtma_manifest_path": Path(entry["rtma_manifest"]),
+        "ndvi_grid": ndvi_grid,
     }
 
 
@@ -553,7 +580,7 @@ def iter_fire_hour_samples(
     discounted_rain_lookback_hours: int,
     discounted_rain_half_life_days: float,
 ) -> tuple[str, int, np.ndarray, np.ndarray]:
-    context = load_fire_entry_context(entry, repo_root)
+    context = load_fire_entry_context(entry, repo_root, include_ndvi=feature_schema.include_ndvi)
 
     for t, rtma_hour in iter_aligned_hours_for_fire(
         repo_root,
@@ -568,7 +595,10 @@ def iter_fire_hour_samples(
         discounted_rain_lookback_hours=discounted_rain_lookback_hours,
         discounted_rain_half_life_days=discounted_rain_half_life_days,
     ):
-        X_hour, y_hour_cont = build_hour_samples(feature_schema, context["goes_conf"][t], context["goes_conf"][t + 1], rtma_hour)
+        X_hour, y_hour_cont = build_hour_samples(
+            feature_schema, context["goes_conf"][t], context["goes_conf"][t + 1],
+            rtma_hour, ndvi_grid=context.get("ndvi_grid"),
+        )
         if X_hour.shape[0] == 0:
             continue
         y_hour = to_binary_target(y_hour_cont, positive_threshold)
