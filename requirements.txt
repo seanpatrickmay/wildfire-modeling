@@ -17,5 +17,8 @@ torch>=2.0
 # Plotting (optional — only needed for notebooks)
 matplotlib>=3.7
 
+# Testing
+pytest>=7.0
+
 # Earth Engine (optional — only needed for download scripts)
 # earthengine-api>=0.1.370

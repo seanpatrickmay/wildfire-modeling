@@ -5,8 +5,8 @@
 # --------------------------------------------
 # @author Tianjia Liu (embrslab@gmail.com)
 # ============================================
-source("/Users/TLiu/Google Drive/My Drive/WestUSFires/scripts/globalParams.R")
-setwd("/Users/TLiu/Google Drive/My Drive/WestUSFires/GOES/")
+source(file.path(dirname(sys.frame(1)$ofile), "globalParams.R"))
+setwd(tempFolder)
 
 for (satMode in c("gofer_combined","gofer_east","gofer_west")) {
   

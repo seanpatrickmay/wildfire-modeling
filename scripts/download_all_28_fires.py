@@ -33,6 +33,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from shared_utils import parse_iso
+
 
 @dataclass(frozen=True)
 class FireSpec:
@@ -75,15 +77,6 @@ FIRE_CATALOG: list[FireSpec] = [
 
 def slugify_fire_name(name: str) -> str:
     return name.replace(" ", "_")
-
-
-def parse_iso(value: str) -> datetime:
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def to_utc_hour_z(dt: datetime) -> str:

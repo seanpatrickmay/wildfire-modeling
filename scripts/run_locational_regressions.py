@@ -28,9 +28,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
-
-def affine_from_list(vals: list) -> rasterio.Affine:
-    return rasterio.Affine(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5])
+from shared_utils import parse_iso, normalize_time_str, affine_from_list, resample_stack
 
 
 def sigmoid(x):
@@ -43,22 +41,6 @@ def compute_u_v(wind_speed: np.ndarray, wind_dir_deg: np.ndarray) -> Tuple[np.nd
     u = -wind_speed * np.sin(rad)
     v = -wind_speed * np.cos(rad)
     return u, v
-
-
-def resample_stack(src_stack, src_transform, src_crs, dst_shape, dst_transform, dst_crs):
-    bands = src_stack.shape[0]
-    dst = np.empty((bands, dst_shape[0], dst_shape[1]), dtype=np.float32)
-    for b in range(bands):
-        reproject(
-            source=src_stack[b],
-            destination=dst[b],
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            resampling=Resampling.bilinear,
-        )
-    return dst
 
 
 def select_top_hours(goes_conf: np.ndarray, threshold: float, top_n: int) -> List[int]:
@@ -96,13 +78,6 @@ def main() -> None:
     goes_conf = np.array(goes_json["data"], dtype=np.float32)
     goes_meta = goes_json["metadata"]
     goes_time_steps = goes_meta.get("time_steps", [])
-    def parse_iso(value: str) -> datetime:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    def normalize_time_str(value: str) -> str:
-        dt = parse_iso(value)
-        return dt.strftime("%Y-%m-%dT%H:00:00Z")
     if goes_time_steps and isinstance(goes_time_steps[0], (int, float)):
         if not args.goes_start:
             raise SystemExit("GOES time_steps are numeric. Provide --goes-start.")

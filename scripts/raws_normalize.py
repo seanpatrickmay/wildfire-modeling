@@ -23,7 +23,7 @@ def compute_stats(values):
     if not clean:
         return None
     mean = sum(clean) / len(clean)
-    var = sum((v - mean) ** 2 for v in clean) / len(clean)
+    var = sum((v - mean) ** 2 for v in clean) / max(len(clean) - 1, 1)
     std = math.sqrt(var)
     return {
         "count": len(clean),
@@ -48,17 +48,21 @@ def normalize(values, stats, method):
             return [0.0 if v is not None else None for v in values]
         return [None if v is None else (v - stats["min"]) / span for v in values]
     if method == "robust":
-        # median and MAD
         clean = [v for v in values if v is not None]
         if not clean:
             return [None for _ in values]
         clean_sorted = sorted(clean)
-        mid = len(clean_sorted) // 2
-        if len(clean_sorted) % 2 == 0:
+        n = len(clean_sorted)
+        mid = n // 2
+        if n % 2 == 0:
             median = (clean_sorted[mid - 1] + clean_sorted[mid]) / 2
         else:
             median = clean_sorted[mid]
-        mad = sorted([abs(v - median) for v in clean_sorted])[mid]
+        abs_devs = sorted(abs(v - median) for v in clean_sorted)
+        if n % 2 == 0:
+            mad = (abs_devs[mid - 1] + abs_devs[mid]) / 2
+        else:
+            mad = abs_devs[mid]
         if mad == 0.0:
             return [0.0 if v is not None else None for v in values]
         return [None if v is None else (v - median) / (1.4826 * mad) for v in values]

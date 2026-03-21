@@ -8,7 +8,7 @@
 # --------------------------------------------
 # @author Tianjia Liu (embrslab@gmail.com)
 # ============================================
-source("/Users/TLiu/Google Drive/My Drive/github/GOFER/R/globalParams.R")
+source(file.path(dirname(sys.frame(1)$ofile), "globalParams.R"))
 setwd(tempFolder)
 
 satMode <- "gofer_combined"

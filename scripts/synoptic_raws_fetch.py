@@ -11,9 +11,11 @@ Example:
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -61,10 +63,42 @@ def get_token(cli_token: str | None) -> str:
     )
 
 
-def http_get_json(url: str) -> dict:
-    with urllib.request.urlopen(url) as response:
-        text = response.read().decode("utf-8")
-    return json.loads(text)
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+INITIAL_BACKOFF = 2.0
+
+
+def http_get_json(url: str, *, max_retries: int = MAX_RETRIES) -> dict:
+    """Fetch JSON from URL with retry logic and exponential backoff."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                text = response.read().decode("utf-8")
+            return json.loads(text)
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code == 429:
+                wait = INITIAL_BACKOFF * (2 ** attempt)
+                logger.warning("Rate limited (429), retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
+            if exc.code >= 500:
+                wait = INITIAL_BACKOFF * (2 ** attempt)
+                logger.warning("Server error (%d), retrying in %.1fs (attempt %d/%d)", exc.code, wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
+            raise
+        except (urllib.error.URLError, OSError) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                wait = INITIAL_BACKOFF * (2 ** attempt)
+                logger.warning("Network error (%s), retrying in %.1fs (attempt %d/%d)", exc, wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"Failed after {max_retries + 1} attempts: {last_exc}") from last_exc
 
 
 def get_raws_network_ids(token: str) -> list[str]:

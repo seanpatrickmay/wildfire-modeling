@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,8 @@ import pandas as pd
 import rasterio
 from rasterio.warp import Resampling, reproject
 from sklearn.linear_model import SGDClassifier
+
+from shared_utils import parse_iso, normalize_time_str, affine_from_list, resample_stack
 
 
 CELL_OFFSETS: list[tuple[str, int, int]] = [
@@ -38,6 +41,8 @@ BASE_VAR_ORDER: list[str] = [
 
 DISCOUNTED_RAIN_FEATURE_NAME = "discounted_rain_30d"
 RTMA_VARS_REQUIRED = ["TMP", "WIND", "WDIR", "SPFH", "ACPC01"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -73,21 +78,6 @@ class TrainingArtifacts:
     model: SGDClassifier
     intercept: float
     coef_map: dict[str, float]
-
-
-def parse_iso(value: str) -> datetime:
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
-
-
-def normalize_time_str(value: str) -> str:
-    dt = parse_iso(value)
-    return dt.strftime("%Y-%m-%dT%H:00:00Z")
-
-
-def affine_from_list(vals: list[float]) -> rasterio.Affine:
-    return rasterio.Affine(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5])
 
 
 def find_repo_root(start: Path) -> Path:
@@ -291,27 +281,79 @@ def resolve_manifest_file_path(path_str: str, repo_root: Path, manifest_dir: Pat
     raise FileNotFoundError(f"Could not resolve RTMA part path: {path_str}")
 
 
-def resample_stack(
-    src_stack: np.ndarray,
-    src_transform: rasterio.Affine,
-    src_crs: Any,
-    dst_shape: tuple[int, int],
-    dst_transform: rasterio.Affine,
-    dst_crs: Any,
-) -> np.ndarray:
-    bands = src_stack.shape[0]
-    dst = np.empty((bands, dst_shape[0], dst_shape[1]), dtype=np.float32)
-    for band_idx in range(bands):
-        reproject(
-            source=src_stack[band_idx],
-            destination=dst[band_idx],
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            resampling=Resampling.bilinear,
+# Valid physical ranges for RTMA variables
+RTMA_VALID_RANGES: dict[str, tuple[float, float]] = {
+    "TMP": (-60.0, 60.0),     # Celsius
+    "WIND": (0.0, 100.0),     # m/s
+    "WDIR": (0.0, 360.0),     # degrees
+    "SPFH": (0.0, 0.1),       # kg/kg
+    "ACPC01": (0.0, 100.0),   # mm/hr (sentinels like 9999.0 are out-of-range)
+}
+
+
+def _spatial_fill_nan(arr: np.ndarray, max_passes: int = 3) -> np.ndarray:
+    """Fill NaN pixels from the mean of valid 3x3 neighbors, iterating up to *max_passes*.
+
+    Uses convolution-based averaging: for each NaN pixel, compute the mean of
+    its valid neighbors and fill.  Repeated passes propagate fills inward for
+    small clusters of adjacent NaN pixels.  Pixels that remain NaN after all
+    passes (e.g. entire rows/columns missing) are left as NaN for the
+    downstream ``isfinite`` filter to drop.
+    """
+    if arr.ndim != 2 or not np.isnan(arr).any():
+        return arr
+    arr = arr.copy()
+    kernel = np.ones((3, 3), dtype=np.float64)
+    for _ in range(max_passes):
+        nan_mask = np.isnan(arr)
+        if not nan_mask.any():
+            break
+        # Convolution of values (NaN→0) and validity counts
+        valid = (~nan_mask).astype(np.float64)
+        vals = np.where(nan_mask, 0.0, arr.astype(np.float64))
+        # Manual 3x3 convolution via padded slicing (avoids scipy dependency)
+        padded_vals = np.pad(vals, 1, mode="constant", constant_values=0.0)
+        padded_valid = np.pad(valid, 1, mode="constant", constant_values=0.0)
+        neighbor_sum = np.zeros_like(vals)
+        neighbor_count = np.zeros_like(valid)
+        for dy in range(3):
+            for dx in range(3):
+                neighbor_sum += padded_vals[dy:dy + arr.shape[0], dx:dx + arr.shape[1]]
+                neighbor_count += padded_valid[dy:dy + arr.shape[0], dx:dx + arr.shape[1]]
+        # Fill NaN pixels that have at least one valid neighbor
+        fillable = nan_mask & (neighbor_count > 0)
+        arr[fillable] = (neighbor_sum[fillable] / neighbor_count[fillable]).astype(arr.dtype)
+    return arr
+
+
+def sanitize_rtma_variable(arr: np.ndarray, variable: str) -> np.ndarray:
+    """Replace sentinel / out-of-range values with NaN, then spatially impute from neighbors.
+
+    Steps:
+      1. Mark pixels outside the valid physical range (or non-finite) as NaN.
+      2. Spatially fill NaN pixels from the mean of their valid 3x3 neighbors.
+      3. Any pixels that could not be filled (no valid neighbors) stay NaN and
+         will be dropped by the downstream ``isfinite`` filter in
+         ``build_hour_samples``.
+    """
+    if variable not in RTMA_VALID_RANGES:
+        return arr
+    lo, hi = RTMA_VALID_RANGES[variable]
+    bad = (arr < lo) | (arr > hi) | ~np.isfinite(arr)
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        return arr
+    arr = arr.copy().astype(np.float32)
+    arr[bad] = np.nan
+    arr = _spatial_fill_nan(arr)
+    n_remaining = int(np.isnan(arr).sum())
+    if n_bad > 0:
+        logger.warning(
+            "RTMA %s: %d bad values (%.2f%%) — %d imputed from neighbors, %d remain NaN",
+            variable, n_bad, 100.0 * n_bad / arr.size,
+            n_bad - n_remaining, n_remaining,
         )
-    return dst
+    return arr
 
 
 def iter_resampled_rtma_hours(
@@ -360,6 +402,13 @@ def iter_resampled_rtma_hours(
         if band_count is None or rtma_transform is None:
             continue
 
+        # Decompose WDIR into sin/cos before resampling (circular variable fix)
+        wdir_raw = rtma_arrays["WDIR"]
+        wdir_rad = np.deg2rad(wdir_raw)
+        rtma_arrays["_WDIR_SIN"] = np.sin(wdir_rad).astype(np.float32)
+        rtma_arrays["_WDIR_COS"] = np.cos(wdir_rad).astype(np.float32)
+
+        resample_vars = [v for v in rtma_vars if v != "WDIR"] + ["_WDIR_SIN", "_WDIR_COS"]
         resampled = {
             variable: resample_stack(
                 rtma_arrays[variable],
@@ -369,8 +418,17 @@ def iter_resampled_rtma_hours(
                 goes_transform,
                 goes_crs,
             )
-            for variable in rtma_vars
+            for variable in resample_vars
         }
+
+        # Reconstruct WDIR from resampled sin/cos components
+        resampled["WDIR"] = np.rad2deg(
+            np.arctan2(resampled["_WDIR_SIN"], resampled["_WDIR_COS"])
+        ).astype(np.float32) % 360.0
+        del resampled["_WDIR_SIN"], resampled["_WDIR_COS"]
+
+        # Free source-resolution arrays now that resampling is done
+        del rtma_arrays
 
         for local_idx in range(band_count):
             global_idx = rtma_time_ptr + local_idx
@@ -378,7 +436,10 @@ def iter_resampled_rtma_hours(
                 break
 
             time_str = rtma_time_steps[global_idx]
-            hour_payload = {variable: resampled[variable][local_idx] for variable in RTMA_VARS_REQUIRED}
+            hour_payload = {
+                variable: sanitize_rtma_variable(resampled[variable][local_idx], variable)
+                for variable in RTMA_VARS_REQUIRED
+            }
             yield time_str, hour_payload
 
         rtma_time_ptr += band_count
@@ -397,6 +458,7 @@ def build_discounted_rain_state(
     if len(precip_history) >= lookback_hours:
         expired_precip = precip_history.popleft()
         next_state = next_state - (expiry_factor * expired_precip)
+    np.clip(next_state, 0.0, None, out=next_state)
     precip_history.append(current_precip)
     return next_state
 
@@ -552,8 +614,13 @@ def iter_fire_hour_samples(
     *,
     discounted_rain_lookback_hours: int,
     discounted_rain_half_life_days: float,
+    zero_frame_keep_fraction: float = 1.0,
+    zero_frame_seed: int = 42,
 ) -> tuple[str, int, np.ndarray, np.ndarray]:
     context = load_fire_entry_context(entry, repo_root)
+    rng = np.random.default_rng(zero_frame_seed)
+    zero_frame_total = 0
+    zero_frame_kept = 0
 
     for t, rtma_hour in iter_aligned_hours_for_fire(
         repo_root,
@@ -572,7 +639,22 @@ def iter_fire_hour_samples(
         if X_hour.shape[0] == 0:
             continue
         y_hour = to_binary_target(y_hour_cont, positive_threshold)
+
+        # Subsample all-zero GOES frames to reduce trivial negative class imbalance
+        if not y_hour.any():
+            zero_frame_total += 1
+            if rng.random() > zero_frame_keep_fraction:
+                continue
+            zero_frame_kept += 1
+
         yield context["fire_name"], t, X_hour, y_hour
+
+    if zero_frame_total > 0:
+        logger.info(
+            "Fire %s: %d/%d all-zero frames kept (%.0f%% subsampled away)",
+            context["fire_name"], zero_frame_kept, zero_frame_total,
+            100.0 * (1 - zero_frame_kept / zero_frame_total),
+        )
 
 
 def collect_entry_stats(
@@ -729,6 +811,7 @@ def train_logistic_regression(
         alpha=alpha,
         max_iter=1,
         tol=None,
+        class_weight="balanced",
         random_state=random_state,
     )
     classes = np.array([0, 1], dtype=np.int32)

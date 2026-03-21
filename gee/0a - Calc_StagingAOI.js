@@ -71,7 +71,7 @@ var getFireConf = function(fireDict,endTime) {
   // Conversion from mask codes to confidence values
   var confidence_codes_to_values = function(confidence) {
     return confidence.expression(
-    '(conf==1.0) + (conf==2.0)*0.9 + (conf==3.0)*0.8 + (conf==4.0)*0.5 + (conf==5.0)*0.3 + (conf==6.0)*0.1',
+    '(conf==1.0) + (conf==2.0)*1.0 + (conf==3.0)*0.8 + (conf==4.0)*0.5 + (conf==5.0)*0.3 + (conf==6.0)*0.1',
       {conf: confidence});
   };
   

@@ -38,6 +38,8 @@ REQUIRED_SOURCE = (
 REQUIRED_VARIABLE = ("source_id", "name", "dtype", "units", "kind")
 ALLOWED_SOURCE_TYPES = {"dynamic", "static"}
 ALLOWED_KINDS = {"continuous", "categorical"}
+ALLOWED_RESAMPLING = {"bilinear", "nearest", "average", "max", "cubic", "mode"}
+VALID_DTYPES = {"float32", "float64", "int8", "int16", "int32", "uint8", "uint16", "uint32"}
 
 
 class ValidationError(Exception):
@@ -59,6 +61,14 @@ def validate_source(src: dict[str, Any], idx: int) -> None:
     )
     require(float(src["native_resolution_m"]) > 0, f"sources[{idx}].native_resolution_m must be > 0")
     require(isinstance(src["variables"], list) and src["variables"], f"sources[{idx}].variables must be non-empty")
+    require(
+        str(src["resampling_method"]) in ALLOWED_RESAMPLING,
+        f"sources[{idx}].resampling_method must be one of {sorted(ALLOWED_RESAMPLING)}",
+    )
+    try:
+        int(src["source_priority"])
+    except (ValueError, TypeError):
+        raise ValidationError(f"sources[{idx}].source_priority must be an integer")
 
 
 
@@ -66,6 +76,14 @@ def validate_variable(var: dict[str, Any], idx: int) -> None:
     for key in REQUIRED_VARIABLE:
         require(key in var, f"variables[{idx}] missing key: {key}")
     require(str(var["kind"]) in ALLOWED_KINDS, f"variables[{idx}].kind must be one of {sorted(ALLOWED_KINDS)}")
+    require(
+        str(var["dtype"]) in VALID_DTYPES,
+        f"variables[{idx}].dtype '{var['dtype']}' not in {sorted(VALID_DTYPES)}",
+    )
+    if "valid_range" in var:
+        vr = var["valid_range"]
+        require(isinstance(vr, list) and len(vr) == 2, f"variables[{idx}].valid_range must be [min, max]")
+        require(float(vr[0]) <= float(vr[1]), f"variables[{idx}].valid_range min must be <= max")
 
 
 
@@ -73,11 +91,26 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for key in REQUIRED_TOP_LEVEL:
         require(key in manifest, f"Missing top-level key: {key}")
 
-    require(str(manifest["manifest_version"]) == "2.0", "manifest_version must be '2.0'")
+    version = manifest["manifest_version"]
+    require(
+        str(version) == "2.0" or version == 2 or version == 2.0,
+        "manifest_version must be '2.0' (string, int 2, or float 2.0 accepted)",
+    )
 
     grid = manifest["target_grid"]
     require(isinstance(grid, dict), "target_grid must be an object")
     require(float(grid.get("resolution_m", 0)) > 0, "target_grid.resolution_m must be > 0")
+    if "crs" in grid:
+        crs_val = str(grid["crs"])
+        require(
+            crs_val.startswith("EPSG:") or crs_val.startswith("+proj="),
+            "target_grid.crs must start with 'EPSG:' or '+proj='",
+        )
+    if "bbox" in grid:
+        bbox = grid["bbox"]
+        require(isinstance(bbox, list) and len(bbox) == 4, "target_grid.bbox must be [minx, miny, maxx, maxy]")
+        require(float(bbox[0]) < float(bbox[2]), "target_grid.bbox: minx must be < maxx")
+        require(float(bbox[1]) < float(bbox[3]), "target_grid.bbox: miny must be < maxy")
 
     sources = manifest["sources"]
     variables = manifest["variables"]

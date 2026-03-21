@@ -174,7 +174,7 @@ class TestComputeStats:
         assert stats["mean"] == pytest.approx(3.0)
         assert stats["min"] == pytest.approx(1.0)
         assert stats["max"] == pytest.approx(5.0)
-        assert stats["std"] == pytest.approx(math.sqrt(2.0))
+        assert stats["std"] == pytest.approx(math.sqrt(2.5))  # sample std (Bessel's correction, N-1)
 
     def test_single_value(self):
         stats = compute_stats([42.0])
