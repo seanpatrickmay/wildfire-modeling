@@ -39,6 +39,7 @@ SEQ_LEN = 6
 CONFIDENCE_THRESHOLD = 0.30
 SMOOTH_WINDOW = 5
 SMOOTH_MIN_VOTES = 2
+LABEL_GAP = SMOOTH_WINDOW - 1  # Shift fire features to avoid smoothing window overlap
 NEG_POS_RATIO = 5.0
 SEED = 42
 
@@ -109,7 +110,8 @@ def collect_samples(
     count = 0
 
     for fv, label in iter_pixel_samples(
-        fire_arrays, feat_arrays, labels, validity, seq_len=SEQ_LEN,
+        fire_arrays, feat_arrays, labels, validity,
+        seq_len=SEQ_LEN, label_gap=LABEL_GAP,
     ):
         X_list.append(fv)
         y_list.append(label)

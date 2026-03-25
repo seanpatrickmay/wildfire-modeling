@@ -401,8 +401,20 @@ def iter_pixel_samples(
     validity: ndarray,
     seq_len: int = 6,
     neighborhood: int = 1,
+    label_gap: int = 0,
 ) -> Generator[tuple[ndarray, float], None, None]:
-    """Yield (feature_vector, label) for XGBoost training."""
+    """Yield (feature_vector, label) for XGBoost training.
+
+    Parameters
+    ----------
+    label_gap : int
+        Number of timesteps to shift fire-detection features back to avoid
+        temporal overlap with the smoothing window used to create ``labels``.
+        Set to ``smooth_window - 1`` (e.g. 4 for window=5) to ensure zero
+        overlap between confidence-derived features and the label's voting
+        window.  Weather/terrain features stay at time ``t`` since they don't
+        feed into the label computation.
+    """
     conf = fire_arrays.get("data")
     if conf is None:
         return
@@ -427,11 +439,15 @@ def iter_pixel_samples(
 
     threshold = 0.30
 
-    for t in range(seq_len - 1, T - 1):
+    for t in range(seq_len - 1 + label_gap, T - 1):
         target_valid = validity[t + 1]
         target_labels = labels[t + 1]
 
-        fire_binary_t = (conf[t] >= threshold)
+        # Fire-detection features use t_fire to avoid overlap with the
+        # smoothing window of labels[t+1].
+        t_fire = t - label_gap
+
+        fire_binary_t = (conf[t_fire] >= threshold)
         if fire_binary_t.any():
             inv_fire = ~fire_binary_t
             dist_map = distance_transform_edt(inv_fire).astype(np.float32)
@@ -439,7 +455,7 @@ def iter_pixel_samples(
             dist_map = None
 
         fire_frac = np.zeros((H, W), dtype=np.float32)
-        conf_t_padded = np.pad(conf[t], ((neighborhood, neighborhood), (neighborhood, neighborhood)),
+        conf_t_padded = np.pad(conf[t_fire], ((neighborhood, neighborhood), (neighborhood, neighborhood)),
                                mode="constant", constant_values=0.0)
         for di in range(-neighborhood, neighborhood + 1):
             for dj in range(-neighborhood, neighborhood + 1):
@@ -457,8 +473,9 @@ def iter_pixel_samples(
             fv = np.empty(n_total, dtype=np.float32)
             pos = 0
 
+            # Confidence neighborhood patches: shifted back by label_gap
             for t_off in range(seq_len):
-                t_src = t - seq_len + 1 + t_off
+                t_src = t_fire - seq_len + 1 + t_off
                 if t_src < 0:
                     fv[pos:pos + n_neigh] = 0.0
                 else:
@@ -469,13 +486,15 @@ def iter_pixel_samples(
                     fv[pos:pos + n_neigh] = patch.ravel()
                 pos += n_neigh
 
-            fv[pos] = frp[t, i, j]
+            # FRP also shifted (same GOES observation as confidence)
+            fv[pos] = frp[t_fire, i, j]
             pos += 1
 
             for arr in static_arrs:
                 fv[pos] = arr[0, i, j]
                 pos += 1
 
+            # Weather features stay at time t (independent of label smoothing)
             for arr in hourly_arrs:
                 fv[pos] = arr[t, i, j]
                 pos += 1
