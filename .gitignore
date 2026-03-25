@@ -38,6 +38,7 @@ ENV/
 
 # Node / frontend
 node_modules/
+dist/
 
 # R
 .Rhistory
