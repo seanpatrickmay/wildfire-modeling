@@ -394,6 +394,8 @@ def iter_resampled_rtma_hours(
 
             time_str = rtma_time_steps[global_idx]
             hour_payload = {variable: resampled[variable][local_idx] for variable in RTMA_VARS_REQUIRED}
+            if "ACPC01" in hour_payload:
+                hour_payload["ACPC01"] = np.clip(hour_payload["ACPC01"], 0.0, 100.0)
             yield time_str, hour_payload
 
         rtma_time_ptr += band_count

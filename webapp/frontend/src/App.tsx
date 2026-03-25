@@ -1,24 +1,75 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useFireList } from "./hooks/useFireList";
-import { useFireData } from "./hooks/useFireData";
-import { usePlayback } from "./hooks/usePlayback";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  fetchFires,
+  fetchProgression,
+  fetchActualFrame,
+  fetchPredictedFrame,
+  type FireSummary,
+  type ProgressionMeta,
+  type FrameData,
+} from "./api/client";
 import { FireSelector } from "./components/FireSelector";
-import { ModelSelector } from "./components/ModelSelector";
-import { TimeControls } from "./components/TimeControls";
 import { HeatmapCanvas } from "./components/HeatmapCanvas";
-import { OverlayCanvas } from "./components/OverlayCanvas";
-import { MetricsPanel } from "./components/MetricsPanel";
 import { ColorLegend } from "./components/ColorLegend";
 import { HoverTooltip } from "./components/HoverTooltip";
-import { computeMetrics, type FrameMetrics } from "./lib/renderFrame";
 
-type ViewMode = "side-by-side" | "overlay";
+interface StepMetrics {
+  actualFirePx: number;
+  predFirePx: number;
+  tp: number;
+  fp: number;
+  fn: number;
+  precision: number;
+  recall: number;
+  f1: number;
+}
+
+function computeStepMetrics(
+  actual: Float32Array | null,
+  predicted: Float32Array | null,
+): StepMetrics | null {
+  if (!actual || !predicted || actual.length !== predicted.length) return null;
+  let tp = 0;
+  let fp = 0;
+  let fn = 0;
+  let actualFirePx = 0;
+  let predFirePx = 0;
+  for (let i = 0; i < actual.length; i++) {
+    const a = actual[i] > 0.5 ? 1 : 0;
+    const p = predicted[i] > 0.5 ? 1 : 0;
+    if (a) actualFirePx++;
+    if (p) predFirePx++;
+    if (a && p) tp++;
+    else if (!a && p) fp++;
+    else if (a && !p) fn++;
+  }
+  const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+  const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+  const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
+  return { actualFirePx, predFirePx, tp, fp, fn, precision, recall, f1 };
+}
 
 export default function App() {
-  const { fires, loading: firesLoading } = useFireList();
+  const [fires, setFires] = useState<FireSummary[]>([]);
+  const [firesLoading, setFiresLoading] = useState(true);
   const [selectedFire, setSelectedFire] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("side-by-side");
+  const [fireMeta, setFireMeta] = useState<{
+    n_hours: number;
+    grid_shape: [number, number];
+  } | null>(null);
+  const [startHour, setStartHour] = useState(6);
+  const [numSteps, setNumSteps] = useState(6);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [actualFrames, setActualFrames] = useState<Map<number, FrameData>>(
+    new Map(),
+  );
+  const [predictedFrames, setPredictedFrames] = useState<
+    Map<number, FrameData>
+  >(new Map());
+  const [progressionMeta, setProgressionMeta] =
+    useState<ProgressionMeta | null>(null);
+  const [framesLoading, setFramesLoading] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{
     row: number;
     col: number;
@@ -26,90 +77,222 @@ export default function App() {
     pred: number | null;
   } | null>(null);
 
-  const { meta, actualFrame, predFrame, loadFrame, loading: metaLoading } =
-    useFireData(selectedFire, selectedModel);
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const maxTime = meta?.time_steps.length ?? 0;
+  // Load fires list
+  useEffect(() => {
+    let cancelled = false;
+    setFiresLoading(true);
+    fetchFires()
+      .then((data) => {
+        if (!cancelled) setFires(data);
+      })
+      .catch((err) => console.error("Failed to load fires:", err))
+      .finally(() => {
+        if (!cancelled) setFiresLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const handleTimeChange = useCallback(
-    (t: number) => {
-      loadFrame(t);
-    },
-    [loadFrame]
+  // When fire selection changes, derive metadata and reset state
+  useEffect(() => {
+    if (!selectedFire) {
+      setFireMeta(null);
+      setProgressionMeta(null);
+      setActualFrames(new Map());
+      setPredictedFrames(new Map());
+      setCurrentStep(0);
+      setPlaying(false);
+      return;
+    }
+    const fire = fires.find((f) => f.name === selectedFire);
+    if (!fire) return;
+    setFireMeta({
+      n_hours: fire.n_hours,
+      grid_shape: fire.grid_shape,
+    });
+    setStartHour(6);
+    setNumSteps(6);
+    setCurrentStep(0);
+    setPlaying(false);
+    setProgressionMeta(null);
+    setActualFrames(new Map());
+    setPredictedFrames(new Map());
+  }, [selectedFire, fires]);
+
+  // Clamp startHour when fireMeta or numSteps change
+  const maxStartHour = fireMeta ? fireMeta.n_hours - 2 : 6;
+  const minStartHour = 6;
+  const clampedStartHour = Math.max(
+    minStartHour,
+    Math.min(startHour, maxStartHour),
   );
 
-  const playback = usePlayback(maxTime, handleTimeChange);
+  // Clamp numSteps so start + numSteps doesn't exceed n_hours
+  const effectiveMaxSteps = fireMeta
+    ? Math.min(12, fireMeta.n_hours - clampedStartHour)
+    : 12;
+  const clampedNumSteps = Math.min(numSteps, effectiveMaxSteps);
 
-  // Reset model selection when fire changes
+  // Load progression data when fire/start/steps change
   useEffect(() => {
-    setSelectedModel(null);
-    playback.setTime(0);
-  }, [selectedFire]);
+    if (!selectedFire || !fireMeta) return;
 
-  // Load first frame when meta loads
+    let cancelled = false;
+    setFramesLoading(true);
+    setCurrentStep(0);
+    setPlaying(false);
+
+    const loadProgression = async () => {
+      try {
+        const meta = await fetchProgression(
+          selectedFire,
+          clampedStartHour,
+          clampedNumSteps,
+        );
+        if (cancelled) return;
+        setProgressionMeta(meta);
+
+        const actualPromises: Array<Promise<[number, FrameData]>> = [];
+        const predPromises: Array<Promise<[number, FrameData]>> = [];
+
+        for (let step = 0; step < clampedNumSteps; step++) {
+          actualPromises.push(
+            fetchActualFrame(selectedFire, clampedStartHour + step + 1).then(
+              (frame) => [step, frame] as [number, FrameData],
+            ),
+          );
+          predPromises.push(
+            fetchPredictedFrame(selectedFire, clampedStartHour, step).then(
+              (frame) => [step, frame] as [number, FrameData],
+            ),
+          );
+        }
+
+        const [actualResults, predResults] = await Promise.all([
+          Promise.all(actualPromises),
+          Promise.all(predPromises),
+        ]);
+
+        if (cancelled) return;
+
+        const newActual = new Map<number, FrameData>();
+        for (const [step, frame] of actualResults) {
+          newActual.set(step, frame);
+        }
+        setActualFrames(newActual);
+
+        const newPred = new Map<number, FrameData>();
+        for (const [step, frame] of predResults) {
+          newPred.set(step, frame);
+        }
+        setPredictedFrames(newPred);
+      } catch (err) {
+        console.error("Failed to load progression:", err);
+      } finally {
+        if (!cancelled) setFramesLoading(false);
+      }
+    };
+
+    loadProgression();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFire, fireMeta, clampedStartHour, clampedNumSteps]);
+
+  // Auto-play
   useEffect(() => {
-    if (meta && maxTime > 0) {
-      loadFrame(0);
+    if (playIntervalRef.current) {
+      clearInterval(playIntervalRef.current);
+      playIntervalRef.current = null;
     }
-  }, [meta]);
-
-  // Reload frame when model changes
-  useEffect(() => {
-    if (meta && selectedModel) {
-      loadFrame(playback.currentTime);
+    if (playing && clampedNumSteps > 0) {
+      playIntervalRef.current = setInterval(() => {
+        setCurrentStep((prev) => {
+          const next = prev + 1;
+          if (next >= clampedNumSteps) {
+            setPlaying(false);
+            return prev;
+          }
+          return next;
+        });
+      }, 800);
     }
-  }, [selectedModel]);
+    return () => {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+    };
+  }, [playing, clampedNumSteps]);
 
-  const availableModels = useMemo(() => {
-    if (!meta) return [];
-    return meta.available_models.map((m) => m.name);
-  }, [meta]);
+  const currentActual = actualFrames.get(currentStep) ?? null;
+  const currentPred = predictedFrames.get(currentStep) ?? null;
 
-  // Get available time indices for selected model
-  const modelTimeIndices = useMemo(() => {
-    if (!meta || !selectedModel) return null;
-    const modelInfo = meta.available_models.find((m) => m.name === selectedModel);
-    return modelInfo ? new Set(modelInfo.time_indices) : null;
-  }, [meta, selectedModel]);
+  const rows = currentActual?.rows ?? fireMeta?.grid_shape[0] ?? 0;
+  const cols = currentActual?.cols ?? fireMeta?.grid_shape[1] ?? 0;
 
-  const metrics: FrameMetrics | null = useMemo(() => {
-    if (!actualFrame?.data || !predFrame?.data) return null;
-    return computeMetrics(actualFrame.data, predFrame.data);
-  }, [actualFrame, predFrame]);
+  const currentTimeActual = clampedStartHour + currentStep + 1;
+  const stepLabel = `Step ${currentStep + 1}/${clampedNumSteps}: t=${clampedStartHour} -> t=${currentTimeActual}`;
 
-  const timeLabel = meta?.time_steps[playback.currentTime] ?? "";
-  const rows = actualFrame?.rows ?? 0;
-  const cols = actualFrame?.cols ?? 0;
+  const metrics = useMemo(
+    () =>
+      computeStepMetrics(
+        currentActual?.data ?? null,
+        currentPred?.data ?? null,
+      ),
+    [currentActual, currentPred],
+  );
 
-  const handleHoverSideBySide = useCallback(
+  const handleHoverActual = useCallback(
     (row: number, col: number, value: number) => {
-      setHoverInfo({ row, col, actual: value, pred: null });
+      const predVal =
+        currentPred?.data && cols > 0
+          ? currentPred.data[row * cols + col]
+          : null;
+      setHoverInfo({ row, col, actual: value, pred: predVal ?? null });
     },
-    []
+    [currentPred, cols],
   );
 
   const handleHoverPred = useCallback(
     (row: number, col: number, value: number) => {
       const actualVal =
-        actualFrame?.data && rows > 0 && cols > 0
-          ? actualFrame.data[row * cols + col]
+        currentActual?.data && cols > 0
+          ? currentActual.data[row * cols + col]
           : NaN;
       setHoverInfo({ row, col, actual: actualVal, pred: value });
     },
-    [actualFrame, rows, cols]
+    [currentActual, cols],
   );
 
-  const handleOverlayHover = useCallback(
-    (row: number, col: number, actualVal: number, predVal: number) => {
-      setHoverInfo({ row, col, actual: actualVal, pred: predVal });
-    },
-    []
-  );
+  const stepBackward = useCallback(() => {
+    setPlaying(false);
+    setCurrentStep((prev) => Math.max(0, prev - 1));
+  }, []);
+
+  const stepForward = useCallback(() => {
+    setPlaying(false);
+    setCurrentStep((prev) => Math.min(clampedNumSteps - 1, prev + 1));
+  }, [clampedNumSteps]);
+
+  const togglePlay = useCallback(() => {
+    setPlaying((prev) => {
+      if (!prev && currentStep >= clampedNumSteps - 1) {
+        setCurrentStep(0);
+      }
+      return !prev;
+    });
+  }, [currentStep, clampedNumSteps]);
 
   if (firesLoading) {
     return (
       <div style={appStyle}>
-        <div style={{ color: "var(--muted)", padding: 40 }}>Loading fires...</div>
+        <div style={{ color: "var(--muted)", padding: 40 }}>
+          Loading fires...
+        </div>
       </div>
     );
   }
@@ -121,176 +304,229 @@ export default function App() {
         <div>
           <p style={kickerStyle}>Wildfire Prediction</p>
           <h1 style={{ fontSize: "clamp(1.6rem, 3vw, 2.4rem)", margin: 0 }}>
-            Model Comparison Viewer
+            Fire Progression Viewer
           </h1>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <FireSelector fires={fires} selected={selectedFire} onSelect={setSelectedFire} />
-        </div>
+        <FireSelector
+          fires={fires}
+          selected={selectedFire}
+          onSelect={setSelectedFire}
+        />
       </header>
 
       {!selectedFire && (
-        <div
-          style={{
-            padding: "60px 20px",
-            textAlign: "center",
-            color: "var(--muted)",
-          }}
-        >
-          <h2 style={{ color: "var(--text)", marginBottom: 8 }}>Select a fire to begin</h2>
-          <p>Choose one of the 8 held-out test fires to visualize model predictions</p>
+        <div style={emptyStateStyle}>
+          <h2 style={{ color: "var(--text)", marginBottom: 8 }}>
+            Select a fire to begin
+          </h2>
+          <p>
+            Choose a fire to compare actual vs predicted fire progression over
+            time
+          </p>
         </div>
       )}
 
-      {selectedFire && meta && (
+      {selectedFire && fireMeta && (
         <>
-          {/* Model selection + view toggle */}
+          {/* Controls row: start hour slider + steps dropdown */}
+          <div style={controlsRowStyle}>
+            <div style={controlGroupStyle}>
+              <label style={controlLabelStyle}>
+                Start Hour:{" "}
+                <span className="mono" style={{ color: "var(--accent-soft)" }}>
+                  {clampedStartHour}
+                </span>
+              </label>
+              <input
+                type="range"
+                min={minStartHour}
+                max={maxStartHour}
+                value={clampedStartHour}
+                onChange={(e) => setStartHour(Number(e.target.value))}
+                style={{ width: 220 }}
+              />
+              <span
+                className="mono"
+                style={{ fontSize: "0.7rem", color: "var(--muted)" }}
+              >
+                {minStartHour}..{maxStartHour}
+              </span>
+            </div>
+
+            <div style={controlGroupStyle}>
+              <label style={controlLabelStyle}>Steps:</label>
+              <select
+                value={clampedNumSteps}
+                onChange={(e) => setNumSteps(Number(e.target.value))}
+                style={selectStyle}
+              >
+                {Array.from({ length: effectiveMaxSteps }, (_, i) => i + 1).map(
+                  (n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+
+            {/* Fire metadata inline */}
+            <div
+              style={{
+                display: "flex",
+                gap: 16,
+                marginLeft: "auto",
+                alignItems: "center",
+              }}
+            >
+              <MetaRow
+                label="Grid"
+                value={`${fireMeta.grid_shape[0]}x${fireMeta.grid_shape[1]}`}
+              />
+              <MetaRow label="Hours" value={`${fireMeta.n_hours}`} />
+            </div>
+          </div>
+
+          {/* Loading overlay */}
+          {framesLoading && (
+            <div style={loadingBarStyle}>
+              <div style={loadingBarFillStyle} />
+            </div>
+          )}
+
+          {/* Main canvas area */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 12,
+              opacity: framesLoading ? 0.4 : 1,
+              transition: "opacity 0.3s",
+            }}
+          >
+            <div style={canvasWrapStyle}>
+              <HeatmapCanvas
+                data={currentActual?.data ?? null}
+                rows={rows}
+                cols={cols}
+                colorMode="fire"
+                label={`Actual (t=${currentTimeActual})`}
+                onHover={handleHoverActual}
+              />
+            </div>
+            <div style={canvasWrapStyle}>
+              <HeatmapCanvas
+                data={currentPred?.data ?? null}
+                rows={rows}
+                cols={cols}
+                colorMode="prob"
+                label={`Predicted (t=${currentTimeActual})`}
+                onHover={handleHoverPred}
+              />
+            </div>
+          </div>
+
+          {/* Step navigation */}
+          <div style={stepNavStyle}>
+            <button
+              onClick={stepBackward}
+              disabled={currentStep === 0}
+              style={navButtonStyle(currentStep === 0)}
+              title="Previous step"
+            >
+              &#9664;
+            </button>
+
+            <div style={stepButtonsContainerStyle}>
+              {Array.from({ length: clampedNumSteps }, (_, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    setPlaying(false);
+                    setCurrentStep(i);
+                  }}
+                  style={stepButtonStyle(i === currentStep)}
+                >
+                  {i}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={stepForward}
+              disabled={currentStep >= clampedNumSteps - 1}
+              style={navButtonStyle(currentStep >= clampedNumSteps - 1)}
+              title="Next step"
+            >
+              &#9654;
+            </button>
+
+            <button onClick={togglePlay} style={playButtonStyle}>
+              {playing ? "Pause" : "Play"}
+            </button>
+          </div>
+
+          {/* Step label */}
+          <div style={stepLabelStyle}>
+            <span className="mono">{stepLabel}</span>
+          </div>
+
+          {/* Divergence metrics */}
+          {metrics && (
+            <div style={metricsRowStyle}>
+              <MetricBadge
+                label="F1"
+                value={metrics.f1.toFixed(3)}
+                highlight
+              />
+              <MetricBadge
+                label="Precision"
+                value={metrics.precision.toFixed(3)}
+              />
+              <MetricBadge label="Recall" value={metrics.recall.toFixed(3)} />
+              <MetricBadge
+                label="Fire px actual"
+                value={String(metrics.actualFirePx)}
+              />
+              <MetricBadge
+                label="Fire px pred"
+                value={String(metrics.predFirePx)}
+              />
+              <MetricBadge label="TP" value={String(metrics.tp)} />
+              <MetricBadge label="FP" value={String(metrics.fp)} />
+              <MetricBadge label="FN" value={String(metrics.fn)} />
+            </div>
+          )}
+
+          {/* Color legends + tooltip */}
           <div
             style={{
               display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
+              gap: 24,
               flexWrap: "wrap",
-              gap: 12,
+              alignItems: "center",
             }}
           >
-            <ModelSelector
-              available={availableModels}
-              selected={selectedModel}
-              onSelect={setSelectedModel}
-            />
-            {selectedModel && (
-              <div style={{ display: "flex", gap: 6 }}>
-                {(["side-by-side", "overlay"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setViewMode(mode)}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: 8,
-                      border: viewMode === mode
-                        ? "1px solid var(--accent-soft)"
-                        : "1px solid rgba(246,244,239,0.15)",
-                      background: viewMode === mode
-                        ? "rgba(242,193,78,0.1)"
-                        : "transparent",
-                      color: viewMode === mode ? "var(--accent-soft)" : "var(--muted)",
-                      fontSize: "0.75rem",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Main content */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 16, alignItems: "start" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {/* Canvas area */}
-              {viewMode === "side-by-side" || !selectedModel ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: selectedModel ? "1fr 1fr" : "1fr",
-                    gap: 12,
-                  }}
-                >
-                  <div style={canvasWrapStyle}>
-                    <HeatmapCanvas
-                      data={actualFrame?.data ?? null}
-                      rows={rows}
-                      cols={cols}
-                      colorMode="fire"
-                      label="Ground Truth"
-                      onHover={handleHoverSideBySide}
-                    />
-                  </div>
-                  {selectedModel && (
-                    <div style={canvasWrapStyle}>
-                      <HeatmapCanvas
-                        data={predFrame?.data ?? null}
-                        rows={predFrame?.rows ?? 0}
-                        cols={predFrame?.cols ?? 0}
-                        colorMode="prob"
-                        label={selectedModel}
-                        onHover={handleHoverPred}
-                      />
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={canvasWrapStyle}>
-                  <OverlayCanvas
-                    actual={actualFrame?.data ?? null}
-                    predicted={predFrame?.data ?? null}
-                    rows={rows}
-                    cols={cols}
-                    onHover={handleOverlayHover}
-                  />
-                </div>
-              )}
-
-              {/* Color legends */}
-              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                {viewMode === "side-by-side" || !selectedModel ? (
-                  <>
-                    <ColorLegend mode="fire" />
-                    {selectedModel && <ColorLegend mode="prob" />}
-                  </>
-                ) : (
-                  <ColorLegend mode="overlay" />
-                )}
-              </div>
-
-              {/* Timeline */}
-              <TimeControls
-                currentTime={playback.currentTime}
-                maxTime={maxTime}
-                playing={playback.playing}
-                speed={playback.speed}
-                timeLabel={timeLabel}
-                onTimeChange={playback.setTime}
-                onTogglePlay={playback.togglePlay}
-                onStepForward={playback.stepForward}
-                onStepBackward={playback.stepBackward}
-                onSpeedChange={playback.setSpeed}
+            <ColorLegend mode="fire" />
+            <ColorLegend mode="prob" />
+            {hoverInfo && (
+              <HoverTooltip
+                row={hoverInfo.row}
+                col={hoverInfo.col}
+                actualValue={hoverInfo.actual}
+                predValue={hoverInfo.pred}
               />
-            </div>
-
-            {/* Sidebar */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {/* Fire metadata */}
-              <div style={metaPanelStyle}>
-                <div style={metaHeaderStyle}>Fire Info</div>
-                <MetaRow label="Name" value={meta.name.replace(/_/g, " ")} />
-                <MetaRow label="Grid" value={`${meta.grid_shape[0]} x ${meta.grid_shape[1]}`} />
-                <MetaRow label="Timesteps" value={`${meta.time_steps.length}`} />
-                <MetaRow label="CRS" value={meta.crs ?? "—"} />
-                <MetaRow label="Models" value={`${meta.available_models.length}`} />
-              </div>
-
-              {/* Metrics */}
-              {selectedModel && <MetricsPanel metrics={metrics} />}
-
-              {/* Hover tooltip */}
-              {hoverInfo && (
-                <HoverTooltip
-                  row={hoverInfo.row}
-                  col={hoverInfo.col}
-                  actualValue={hoverInfo.actual}
-                  predValue={hoverInfo.pred ?? NaN}
-                />
-              )}
-            </div>
+            )}
           </div>
         </>
       )}
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Helper components                                                   */
+/* ------------------------------------------------------------------ */
 
 function MetaRow({ label, value }: { label: string; value: string }) {
   return (
@@ -313,6 +549,29 @@ function MetaRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+function MetricBadge({
+  label,
+  value,
+  highlight = false,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div style={metricBadgeStyle(highlight)}>
+      <span style={metricBadgeLabelStyle}>{label}</span>
+      <span className="mono" style={{ fontSize: "0.9rem" }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Styles                                                              */
+/* ------------------------------------------------------------------ */
 
 const appStyle: React.CSSProperties = {
   display: "flex",
@@ -339,6 +598,45 @@ const kickerStyle: React.CSSProperties = {
   margin: "0 0 6px",
 };
 
+const emptyStateStyle: React.CSSProperties = {
+  padding: "60px 20px",
+  textAlign: "center",
+  color: "var(--muted)",
+};
+
+const controlsRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 24,
+  flexWrap: "wrap",
+  padding: "12px 16px",
+  borderRadius: 14,
+  background: "var(--panel)",
+  border: "1px solid rgba(246,244,239,0.12)",
+  boxShadow: "var(--shadow)",
+};
+
+const controlGroupStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const controlLabelStyle: React.CSSProperties = {
+  fontSize: "0.8rem",
+  color: "var(--muted)",
+  whiteSpace: "nowrap",
+};
+
+const selectStyle: React.CSSProperties = {
+  padding: "6px 12px",
+  borderRadius: 8,
+  background: "rgba(246,244,239,0.08)",
+  border: "1px solid rgba(246,244,239,0.2)",
+  color: "var(--text)",
+  fontSize: "0.85rem",
+};
+
 const canvasWrapStyle: React.CSSProperties = {
   borderRadius: 18,
   background: "linear-gradient(135deg, #15292b, #1b3a3b)",
@@ -347,20 +645,117 @@ const canvasWrapStyle: React.CSSProperties = {
   minHeight: 300,
 };
 
-const metaPanelStyle: React.CSSProperties = {
-  display: "grid",
+const loadingBarStyle: React.CSSProperties = {
+  height: 3,
+  borderRadius: 2,
+  background: "rgba(246,244,239,0.08)",
+  overflow: "hidden",
+};
+
+const loadingBarFillStyle: React.CSSProperties = {
+  height: "100%",
+  width: "40%",
+  borderRadius: 2,
+  background: "var(--accent)",
+  animation: "loadSlide 1.2s ease-in-out infinite",
+};
+
+const stepNavStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+};
+
+const stepButtonsContainerStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 4,
+  flexWrap: "wrap",
+  justifyContent: "center",
+};
+
+function stepButtonStyle(active: boolean): React.CSSProperties {
+  return {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    border: active
+      ? "2px solid var(--accent)"
+      : "1px solid rgba(246,244,239,0.15)",
+    background: active ? "rgba(242,107,58,0.2)" : "transparent",
+    color: active ? "var(--accent)" : "var(--muted)",
+    fontWeight: active ? 700 : 400,
+    fontSize: "0.8rem",
+    fontFamily: "inherit",
+    cursor: "pointer",
+    transition: "all 0.15s",
+  };
+}
+
+function navButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    border: "1px solid rgba(246,244,239,0.15)",
+    background: "transparent",
+    color: disabled ? "rgba(246,244,239,0.2)" : "var(--text)",
+    fontSize: "0.9rem",
+    cursor: disabled ? "default" : "pointer",
+    opacity: disabled ? 0.4 : 1,
+    transition: "all 0.15s",
+  };
+}
+
+const playButtonStyle: React.CSSProperties = {
+  padding: "6px 16px",
+  borderRadius: 8,
+  border: "1px solid var(--accent-soft)",
+  background: "rgba(242,193,78,0.1)",
+  color: "var(--accent-soft)",
+  fontSize: "0.8rem",
+  fontWeight: 600,
+  marginLeft: 8,
+  cursor: "pointer",
+  transition: "all 0.15s",
+};
+
+const stepLabelStyle: React.CSSProperties = {
+  textAlign: "center",
+  color: "var(--muted)",
+  fontSize: "0.8rem",
+};
+
+const metricsRowStyle: React.CSSProperties = {
+  display: "flex",
   gap: 10,
-  padding: 16,
-  borderRadius: 16,
+  flexWrap: "wrap",
+  padding: "12px 16px",
+  borderRadius: 14,
   background: "var(--panel)",
   border: "1px solid rgba(246,244,239,0.12)",
   boxShadow: "var(--shadow)",
-  fontSize: "0.9rem",
 };
 
-const metaHeaderStyle: React.CSSProperties = {
-  fontSize: "0.75rem",
+function metricBadgeStyle(highlight: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 2,
+    padding: "6px 12px",
+    borderRadius: 10,
+    background: highlight ? "rgba(242,107,58,0.12)" : "transparent",
+    border: highlight
+      ? "1px solid rgba(242,107,58,0.3)"
+      : "1px solid transparent",
+    minWidth: 60,
+  };
+}
+
+const metricBadgeLabelStyle: React.CSSProperties = {
+  fontSize: "0.6rem",
   color: "var(--muted)",
   textTransform: "uppercase",
-  letterSpacing: "0.12em",
+  letterSpacing: "0.1em",
 };

@@ -3,8 +3,8 @@ const API_BASE = "/api";
 export interface FireSummary {
   name: string;
   grid_shape: [number, number];
-  timestep_count: number;
-  available_models: string[];
+  n_hours: number;
+  smoothed_fire_pixels: number[];
 }
 
 export interface ModelInfo {
@@ -28,6 +28,14 @@ export interface FrameData {
   cols: number;
   timeIndex: number;
   timeStep: string;
+}
+
+export interface ProgressionMeta {
+  actual: Array<{ t: number; fire_pixels: number }>;
+  predicted: Array<{ t: number; fire_pixels: number }>;
+  grid_shape: [number, number];
+  start: number;
+  steps: number;
 }
 
 export async function fetchFires(): Promise<FireSummary[]> {
@@ -69,5 +77,36 @@ export function fetchPrediction(
 ): Promise<FrameData> {
   return fetchBinaryFrame(
     `${API_BASE}/fires/${fireName}/prediction/${model}/${t}`
+  );
+}
+
+export async function fetchProgression(
+  fireName: string,
+  start: number,
+  steps: number
+): Promise<ProgressionMeta> {
+  const res = await fetch(
+    `${API_BASE}/fires/${fireName}/progression?start=${start}&steps=${steps}`
+  );
+  if (!res.ok) throw new Error(`Failed to fetch progression: ${res.status}`);
+  return res.json();
+}
+
+export function fetchActualFrame(
+  fireName: string,
+  t: number
+): Promise<FrameData> {
+  return fetchBinaryFrame(
+    `${API_BASE}/fires/${fireName}/progression/actual/${t}`
+  );
+}
+
+export function fetchPredictedFrame(
+  fireName: string,
+  start: number,
+  step: number
+): Promise<FrameData> {
+  return fetchBinaryFrame(
+    `${API_BASE}/fires/${fireName}/progression/predicted?start=${start}&step=${step}`
   );
 }

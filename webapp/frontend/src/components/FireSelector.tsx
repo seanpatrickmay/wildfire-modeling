@@ -27,7 +27,7 @@ export function FireSelector({ fires, selected, onSelect }: Props) {
       {fires.map((f) => (
         <option key={f.name} value={f.name}>
           {f.name.replace(/_/g, " ")} ({f.grid_shape[0]}x{f.grid_shape[1]},{" "}
-          {f.timestep_count} steps)
+          {f.n_hours} hours)
         </option>
       ))}
     </select>
