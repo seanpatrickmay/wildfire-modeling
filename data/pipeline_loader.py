@@ -602,6 +602,62 @@ WIND_U_CH_V3: int = CHANNEL_ORDER_V3.index("hourly_ugrd")
 WIND_V_CH_V3: int = CHANNEL_ORDER_V3.index("hourly_vgrd")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# V4: Ablation-optimized feature set (38 channels, F2-optimized)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CHANNEL_ORDER_V4: list[str] = [
+    # Pre-shifted fire features
+    "prev_fire_state",
+    "prev_distance_to_fire",
+    "prev_fire_neighborhood",
+    # Hourly weather (RTMA + GPM precipitation)
+    "hourly_ugrd",
+    "hourly_vgrd",
+    "hourly_gust",
+    "hourly_tmp",
+    "hourly_dpt",
+    "hourly_soil_moisture",
+    "hourly_gpm_precipitation_mmhr",
+    # Daily fire weather (GRIDMET + extensions)
+    "daily_erc",
+    "daily_bi",
+    "daily_fm100",
+    "daily_fm1000",
+    "daily_vpd",
+    "daily_rmin",
+    "daily_rmax",
+    "daily_vs",
+    "daily_th",
+    "daily_lst_day_k",
+    "daily_lst_night_k",
+    # Static terrain (+ ruggedness, firebreaks)
+    "static_slope_deg",
+    "static_aspect_sin",
+    "static_aspect_cos",
+    "static_elevation",
+    "static_tpi",
+    "static_fuel_load",
+    "static_canopy_cover_pct",
+    "static_terrain_ruggedness",
+    "static_is_firebreak",
+    # Vegetation + drought
+    "slow_NDVI",
+    "slow_EVI",
+    "slow_pdsi",
+    # Temporal encoding
+    "temporal_hour_sin",
+    "temporal_hour_cos",
+    "temporal_doy_sin",
+    "temporal_doy_cos",
+    # Quality mask
+    "validity",
+]
+
+WIND_U_CH_V4: int = CHANNEL_ORDER_V4.index("hourly_ugrd")
+WIND_V_CH_V4: int = CHANNEL_ORDER_V4.index("hourly_vgrd")
+
+
 def load_processed_fire_data(
     fire_name: str,
     pipeline_dir: str,
@@ -641,15 +697,19 @@ def load_processed_fire_data(
     return processed, features
 
 
-def build_channel_stack_v3(
+_PROC_KEYS = {"prev_fire_state", "prev_distance_to_fire", "prev_fire_neighborhood", "validity"}
+
+
+def _build_channel_stack(
     processed: dict,
     features: dict,
+    channel_order: list[str],
     pad_h: int | None = None,
     pad_w: int | None = None,
 ) -> ndarray:
-    """Build (T, C, H, W) stack from processed + feature arrays (V3 format).
+    """Build (T, C, H, W) stack from processed + feature arrays.
 
-    Uses prev_fire_state instead of raw confidence — no temporal leakage.
+    Generic builder — works with any channel order list.
     """
     labels = processed["labels"]
     T, H, W = labels.shape
@@ -659,12 +719,10 @@ def build_channel_stack_v3(
     if pad_w is None:
         pad_w = max(48, ((W + 15) // 16) * 16)
 
-    C = len(CHANNEL_ORDER_V3)
+    C = len(channel_order)
     stack = np.zeros((T, C, pad_h, pad_w), dtype=np.float32)
 
-    _PROC_KEYS = ["prev_fire_state", "prev_distance_to_fire", "prev_fire_neighborhood", "validity"]
-
-    for c, key in enumerate(CHANNEL_ORDER_V3):
+    for c, key in enumerate(channel_order):
         if key in _PROC_KEYS:
             arr = processed.get(key)
         else:
@@ -676,7 +734,6 @@ def build_channel_stack_v3(
         arr = np.nan_to_num(arr.astype(np.float32), nan=0.0)
 
         if arr.ndim == 2:
-            # Static (H, W) → broadcast
             h_clip = min(arr.shape[0], H, pad_h)
             w_clip = min(arr.shape[1], W, pad_w)
             stack[:, c, :h_clip, :w_clip] = arr[:h_clip, :w_clip]
@@ -687,6 +744,22 @@ def build_channel_stack_v3(
             stack[:t_clip, c, :h_clip, :w_clip] = arr[:t_clip, :h_clip, :w_clip]
 
     return stack
+
+
+def build_channel_stack_v3(
+    processed: dict, features: dict,
+    pad_h: int | None = None, pad_w: int | None = None,
+) -> ndarray:
+    """Build (T, 28, H, W) stack — V3 channel order."""
+    return _build_channel_stack(processed, features, CHANNEL_ORDER_V3, pad_h, pad_w)
+
+
+def build_channel_stack_v4(
+    processed: dict, features: dict,
+    pad_h: int | None = None, pad_w: int | None = None,
+) -> ndarray:
+    """Build (T, 38, H, W) stack — V4 ablation-optimized channel order."""
+    return _build_channel_stack(processed, features, CHANNEL_ORDER_V4, pad_h, pad_w)
 
 
 def iter_grid_sequences_v3(
