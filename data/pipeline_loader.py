@@ -720,8 +720,24 @@ _PIXEL_V3_SLOW_KEYS = _SLOW_KEYS
 _PIXEL_V3_TEMPORAL_KEYS = _TEMPORAL_KEYS
 
 
-def get_pixel_feature_names_v3(seq_len: int = 6, neighborhood: int = 1) -> list[str]:
+def get_pixel_feature_names_v3(
+    seq_len: int = 6,
+    neighborhood: int = 1,
+    static_keys: list[str] | None = None,
+    hourly_keys: list[str] | None = None,
+    daily_keys: list[str] | None = None,
+    slow_keys: list[str] | None = None,
+    temporal_keys: list[str] | None = None,
+    extra_proc_keys: list[str] | None = None,
+) -> list[str]:
     """Feature names for V3 iter_pixel_samples_v3 output."""
+    _static = static_keys if static_keys is not None else _PIXEL_V3_STATIC_KEYS
+    _hourly = hourly_keys if hourly_keys is not None else _PIXEL_V3_HOURLY_KEYS
+    _daily = daily_keys if daily_keys is not None else _PIXEL_V3_DAILY_KEYS
+    _slow = slow_keys if slow_keys is not None else _PIXEL_V3_SLOW_KEYS
+    _temporal = temporal_keys if temporal_keys is not None else _PIXEL_V3_TEMPORAL_KEYS
+    _extra_proc = extra_proc_keys or []
+
     names: list[str] = []
 
     side = 2 * neighborhood + 1
@@ -733,19 +749,22 @@ def get_pixel_feature_names_v3(seq_len: int = 6, neighborhood: int = 1) -> list[
     names.append("prev_distance_to_fire")
     names.append("prev_fire_neighborhood")
 
-    for key in _PIXEL_V3_STATIC_KEYS:
+    for key in _extra_proc:
+        names.append(key)
+
+    for key in _static:
         names.append(key.replace("static_", ""))
 
-    for key in _PIXEL_V3_HOURLY_KEYS:
+    for key in _hourly:
         names.append(key.replace("hourly_", ""))
 
-    for key in _PIXEL_V3_DAILY_KEYS:
+    for key in _daily:
         names.append(key.replace("daily_", ""))
 
-    for key in _PIXEL_V3_SLOW_KEYS:
+    for key in _slow:
         names.append(key.replace("slow_", ""))
 
-    for key in _PIXEL_V3_TEMPORAL_KEYS:
+    for key in _temporal:
         names.append(key.replace("temporal_", ""))
 
     return names
@@ -756,6 +775,13 @@ def iter_pixel_samples_v3(
     features: dict,
     seq_len: int = 6,
     neighborhood: int = 1,
+    static_keys: list[str] | None = None,
+    hourly_keys: list[str] | None = None,
+    daily_keys: list[str] | None = None,
+    slow_keys: list[str] | None = None,
+    temporal_keys: list[str] | None = None,
+    extra_proc_keys: list[str] | None = None,
+    use_soft_labels: bool = False,
 ) -> Generator[tuple[ndarray, float, float], None, None]:
     """Yield (feature_vector, label, loss_weight) for XGBoost (V3 format).
 
@@ -763,7 +789,14 @@ def iter_pixel_samples_v3(
     No temporal contamination — prev_fire_state[t] = labels[t-1] by construction.
     Target is labels[t].
     """
-    labels = processed["labels"]
+    _static = static_keys if static_keys is not None else _PIXEL_V3_STATIC_KEYS
+    _hourly = hourly_keys if hourly_keys is not None else _PIXEL_V3_HOURLY_KEYS
+    _daily = daily_keys if daily_keys is not None else _PIXEL_V3_DAILY_KEYS
+    _slow = slow_keys if slow_keys is not None else _PIXEL_V3_SLOW_KEYS
+    _temporal = temporal_keys if temporal_keys is not None else _PIXEL_V3_TEMPORAL_KEYS
+    _extra_proc = extra_proc_keys or []
+
+    labels = processed["soft_labels" if use_soft_labels else "labels"]
     validity = processed["validity"]
     prev_fire = processed["prev_fire_state"]
     prev_dist = processed["prev_distance_to_fire"]
@@ -772,19 +805,19 @@ def iter_pixel_samples_v3(
 
     T, H, W = labels.shape
 
-    static_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_STATIC_KEYS]
-    hourly_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_HOURLY_KEYS]
-    daily_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_DAILY_KEYS]
-    slow_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_SLOW_KEYS]
-    temporal_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_TEMPORAL_KEYS]
+    static_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _static]
+    hourly_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _hourly]
+    daily_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _daily]
+    slow_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _slow]
+    temporal_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _temporal]
 
     side = 2 * neighborhood + 1
     n_neigh = side * side
     n_conf_feat = n_neigh * seq_len
-    n_total = (n_conf_feat + 2
-               + len(_PIXEL_V3_STATIC_KEYS) + len(_PIXEL_V3_HOURLY_KEYS)
-               + len(_PIXEL_V3_DAILY_KEYS) + len(_PIXEL_V3_SLOW_KEYS)
-               + len(_PIXEL_V3_TEMPORAL_KEYS))
+    n_total = (n_conf_feat + 2 + len(_extra_proc)
+               + len(_static) + len(_hourly)
+               + len(_daily) + len(_slow)
+               + len(_temporal))
 
     prev_fire_padded = np.pad(
         prev_fire, ((0, 0), (neighborhood, neighborhood), (neighborhood, neighborhood)),
@@ -823,6 +856,17 @@ def iter_pixel_samples_v3(
             pos += 1
             fv[pos] = prev_neigh[t, i, j]
             pos += 1
+
+            # Extra processed features
+            for key in _extra_proc:
+                arr = processed.get(key)
+                if arr is not None and arr.ndim == 3:
+                    fv[pos] = arr[t, i, j]
+                elif arr is not None and arr.ndim == 2:
+                    fv[pos] = arr[i, j]
+                else:
+                    fv[pos] = 0.0
+                pos += 1
 
             # Static terrain
             for arr in static_arrs:
