@@ -16,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.fire_spread_model_v2 import FireSpreadNetV2
-from scripts.pipeline_data_loader import (
+from models.firespreadnet.architecture import FireSpreadNetV2
+from data.pipeline_loader import (
     CHANNEL_ORDER,
     build_channel_stack,
     load_fire_data,

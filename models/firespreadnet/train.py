@@ -15,15 +15,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.fire_spread_model_v2 import (
+from models.firespreadnet.architecture import (
     CombinedLoss,
     FireSpreadNetV2,
     augment_sequence_v2,
 )
-from scripts.pipeline_data_loader import (
+from data.pipeline_loader import (
     CHANNEL_ORDER_V3,
     WIND_U_CH_V3,
     WIND_V_CH_V3,
