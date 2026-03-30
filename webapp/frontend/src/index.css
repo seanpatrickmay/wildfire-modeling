@@ -1,0 +1,51 @@
+:root {
+  --bg: #0f1c1d;
+  --bg-alt: #182f30;
+  --panel: rgba(15, 28, 29, 0.75);
+  --accent: #f26b3a;
+  --accent-soft: #f2c14e;
+  --text: #f6f4ef;
+  --muted: #bac7c8;
+  --grid: rgba(246, 244, 239, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+
+  --fp-color: #4a9eff;
+  --fn-color: #ff4a4a;
+  --tp-color: #ffe066;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at top, #254247 0%, #0f1c1d 55%) fixed;
+  min-height: 100vh;
+}
+
+code, .mono {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+select {
+  font-family: inherit;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+@keyframes loadSlide {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(-100%); }
+}

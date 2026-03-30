@@ -1,4 +1,4 @@
-"""Tests for math-heavy utility functions across scripts/."""
+"""Tests for math-heavy utility functions (archived scripts)."""
 
 import math
 import sys
@@ -7,9 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# Add scripts/ to path so we can import modules directly
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+# Add archive paths so we can import utility functions for testing
+REPO_ROOT = Path(__file__).resolve().parent.parent
+for _subdir in ["archive/etl", "archive/experiments", "archive/neighbor_cell"]:
+    sys.path.insert(0, str(REPO_ROOT / _subdir))
 
 
 # ---------------------------------------------------------------------------

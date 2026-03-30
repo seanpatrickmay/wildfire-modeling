@@ -38,6 +38,7 @@ ENV/
 
 # Node / frontend
 node_modules/
+dist/
 
 # R
 .Rhistory
@@ -51,8 +52,15 @@ node_modules/
 .env
 .env.*
 
-# Generated data outputs
-/data/
+# Generated data outputs (runtime artifacts, not source code)
+/data/checkpoints/
+/data/analysis/
+/data/ee_exports/
+/data/multi_fire/
+/data/predictions/
+/data/rtma/
+/data/viirs/
+/data/README.md
 
 # Accidental local folders created from SSH-style repo URLs
 /git@github.com:*/
