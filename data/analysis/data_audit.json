@@ -1,0 +1,89 @@
+{
+  "audit_date": "2026-03-20",
+  "summary": "Data quality audit of GOES fire confidence and RTMA weather data across all 28 fires.",
+
+  "goes_fire_confidence": {
+    "status": "MOSTLY_CLEAN",
+    "value_range": [0.0, 1.0],
+    "unique_values": [0.0, 0.1, 0.3, 0.5, 0.8, 1.0],
+    "note": "Values are discrete confidence levels mapped from GOES mask codes, not continuous.",
+    "issues": {
+      "nan_pixels": {
+        "affected_fires": ["Beckwourth_Complex", "Dixie", "July_Complex", "Red_Salmon_Complex", "Tamarack"],
+        "severity": "LOW",
+        "max_nan_pct": 2.67,
+        "note": "July_Complex has 2.67% NaN; others <0.25%. NaN pixels are filtered by isfinite check in build_hour_samples."
+      },
+      "zero_frame_dominance": {
+        "severity": "MEDIUM",
+        "note": "Many fires have >50% all-zero timesteps (no fire detected anywhere in grid). These timesteps still generate training samples where label=0 everywhere. This massively inflates the negative class and means most training signal comes from 'no fire anywhere' hours.",
+        "worst_fires": {
+          "Tamarack": "76.5% zero frames",
+          "Beckwourth_Complex": "71.2% zero frames",
+          "Antelope": "68.1% zero frames",
+          "Slater_and_Devil": "59.4% zero frames",
+          "CZU_Lightning_Complex": "56.4% zero frames",
+          "Red_Salmon_Complex": "53.9% zero frames",
+          "McCash": "51.7% zero frames"
+        }
+      },
+      "negative_values": "NONE",
+      "values_above_1": "NONE"
+    }
+  },
+
+  "rtma_weather": {
+    "status": "TWO_CRITICAL_ISSUES",
+
+    "issue_1_temperature_units": {
+      "severity": "INFO",
+      "description": "Temperature (TMP) is stored in Celsius, not Kelvin. Range across all fires: -23.78°C to 48.09°C. This is physically valid for California summer/fall fires. The model normalizes via z-score so the unit doesn't affect training, but downstream code or documentation expecting Kelvin will be wrong.",
+      "affected_fires": "ALL 28",
+      "action": "Document that TMP is in Celsius. No code change needed since z-score normalization is unit-agnostic."
+    },
+
+    "issue_2_precipitation_sentinel_9999": {
+      "severity": "CRITICAL",
+      "description": "NOAA RTMA uses 9999.0 as a missing-data sentinel for precipitation (ACPC01). These values are NOT cleaned before entering the model. A single 9999 value means '9999 mm of rain in one hour' — obviously impossible (world record is ~300mm/hr). Worse: the discounted_rain_30d feature ACCUMULATES these, so one sentinel contaminates ~720 subsequent hours of the exponential decay feature.",
+      "affected_fires": {
+        "Kincade": "5.75% of precip pixels are 9999 (18,954 pixels). Mean precip inflated to 575 mm/hr.",
+        "Walker": "0.34% of precip pixels are 9999 (1,458 pixels). Mean precip inflated to 33.8 mm/hr.",
+        "Red_Salmon_Complex": "0.06% of precip pixels are 9999 (2,379 pixels). Mean precip inflated to 5.5 mm/hr.",
+        "July_Complex": "0.03% of precip pixels are 9999 (416 pixels). Mean precip inflated to 3.4 mm/hr."
+      },
+      "downstream_effects": [
+        "precipitation_1h feature: 9999 value becomes ~67 standard deviations after z-score normalization",
+        "discounted_rain_30d feature: sentinel propagates through exponential decay, contaminating hundreds of subsequent timesteps",
+        "normalizer mean/std: inflated by sentinel values, distorting normalization for ALL fires",
+        "XGBoost: tree splits may learn to key on these outliers as spurious predictors"
+      ],
+      "fix": "Clamp ACPC01 to [0, 100] or replace values > 100 with 0.0 before feature engineering."
+    },
+
+    "variable_ranges_observed": {
+      "TMP": {"min": -23.78, "max": 48.09, "unit": "Celsius", "status": "VALID"},
+      "WIND": {"min": 0.0, "max": 28.27, "unit": "m/s", "status": "VALID"},
+      "WDIR": {"min": 0.0, "max": 360.0, "unit": "degrees", "status": "VALID"},
+      "SPFH": {"min": 0.0, "max": 0.0203, "unit": "kg/kg", "status": "VALID"},
+      "ACPC01": {"min": 0.0, "max": 9999.0, "unit": "mm/hr", "status": "CONTAMINATED_BY_SENTINELS"}
+    }
+  },
+
+  "feature_pipeline": {
+    "status": "SENTINEL_PASSES_THROUGH_UNCLEANED",
+    "note": "build_hour_samples and iter_aligned_hours_for_fire do not sanitize RTMA values. NaN is handled by np.isfinite filtering on the output, but 9999 sentinel values are finite and pass through.",
+    "discounted_rain_contamination": "A 9999 sentinel at hour T propagates via exponential decay: at T+1 the discounted_rain is ~9999*decay, at T+168 (1 week) it's still ~4999. The lookback window is 720 hours (30 days), so contamination persists for a full month of subsequent timesteps."
+  },
+
+  "class_balance": {
+    "positive_rate_overall": 0.00287,
+    "note": "Only 0.29% of all pixels across all fires/hours are positive (confidence >= 0.1). After 3% negative subsampling, training positive rate is ~9.3%."
+  },
+
+  "recommendations": [
+    "CRITICAL: Clamp ACPC01 to [0, 100] in the RTMA loading pipeline to remove 9999 sentinels.",
+    "MEDIUM: Consider filtering out all-zero GOES frames to reduce negative class noise — or at minimum reducing their weight.",
+    "LOW: Document that TMP is in Celsius for future reference.",
+    "INVESTIGATION: The precipitation sentinel contamination may explain why weather features hurt the model — the model may be learning sentinel-driven patterns that don't generalize."
+  ]
+}
