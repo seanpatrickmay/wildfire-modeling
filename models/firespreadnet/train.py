@@ -1,7 +1,7 @@
-"""Train FireSpreadNet v2 on V3 pipeline data (prev_fire_state approach).
+"""Train FireSpreadNet v2 on V4 pipeline data (ablation-optimized features).
 
-Uses 28-channel stack with pre-shifted fire features — no temporal leakage.
-Target is labels[t], input includes prev_fire_state[t] = labels[t-1].
+Uses 38-channel stack with pre-shifted fire features, GPM precipitation,
+extended daily weather, PDSI drought, terrain ruggedness, and firebreaks.
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ from models.firespreadnet.architecture import (
     augment_sequence_v2,
 )
 from data.pipeline_loader import (
-    CHANNEL_ORDER_V3,
-    WIND_U_CH_V3,
-    WIND_V_CH_V3,
-    build_channel_stack_v3,
+    CHANNEL_ORDER_V4,
+    WIND_U_CH_V4,
+    WIND_V_CH_V4,
+    build_channel_stack_v4,
     compute_channel_stats,
     iter_grid_sequences_v3,
     load_processed_fire_data,
@@ -55,7 +55,7 @@ WEIGHT_DECAY = 1e-4
 GRAD_CLIP = 1.0
 N_EPOCHS = 20
 CHECKPOINT_DIR = REPO_ROOT / "data" / "checkpoints"
-ANALYSIS_DIR = REPO_ROOT / "data" / "analysis" / "firespreadnet_v3"
+ANALYSIS_DIR = REPO_ROOT / "data" / "analysis" / "firespreadnet_v4"
 
 MIN_FIRE_PIXELS = 50
 TRAIN_FRACTION = 0.7
@@ -101,7 +101,7 @@ def load_and_prepare_fire(
     Returns (stack, labels, validity, loss_weights) all padded to (T, pad_h, pad_w).
     """
     processed, features = load_processed_fire_data(fire_name, str(pipeline_dir))
-    stack = build_channel_stack_v3(processed, features, pad_h, pad_w)
+    stack = build_channel_stack_v4(processed, features, pad_h, pad_w)
 
     T, H, W = processed["labels"].shape
     labels_padded = np.zeros((T, pad_h, pad_w), dtype=np.float32)
@@ -168,7 +168,7 @@ def train_epoch(
 
             f_t, t_t, m_t = augment_sequence_v2(
                 f_t, t_t, m_t, rng,
-                wind_u_ch=WIND_U_CH_V3, wind_v_ch=WIND_V_CH_V3,
+                wind_u_ch=WIND_U_CH_V4, wind_v_ch=WIND_V_CH_V4,
             )
 
             batch_f.append(f_t)
@@ -306,7 +306,7 @@ def main() -> None:
 
     device = pick_device()
     log(f"Device: {device}")
-    log(f"Channels: {len(CHANNEL_ORDER_V3)} (V3 — prev_fire_state, no leakage)")
+    log(f"Channels: {len(CHANNEL_ORDER_V4)} (V4 — ablation-optimized, 38ch)")
 
     # Discover fires with processed data
     all_fires = discover_fires(PIPELINE_DIR)
@@ -370,7 +370,7 @@ def main() -> None:
 
     # Normalize in-place to avoid doubling memory
     def normalize_inplace(stack: np.ndarray) -> None:
-        validity_idx = len(CHANNEL_ORDER_V3) - 1
+        validity_idx = len(CHANNEL_ORDER_V4) - 1
         m = means.reshape(1, -1, 1, 1)
         s = stds.reshape(1, -1, 1, 1)
         stack[:, :validity_idx] -= m[:, :validity_idx]
@@ -391,7 +391,7 @@ def main() -> None:
     log(f"Data loaded. {len(train_data)} train + {len(test_data)} test fires.")
 
     # Model
-    n_channels = len(CHANNEL_ORDER_V3)
+    n_channels = len(CHANNEL_ORDER_V4)
     model = FireSpreadNetV2(in_channels=n_channels, dropout=0.1).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f"FireSpreadNetV2: {n_params:,} params, {n_channels} channels")
@@ -424,8 +424,8 @@ def main() -> None:
                 "epoch": epoch, "best_f1": best_f1,
                 "train_fires": train_names, "test_fires": test_names,
                 "in_channels": n_channels,
-                "data_version": "v3_prev_fire_state",
-            }, CHECKPOINT_DIR / "firespreadnet_v3_best.pt")
+                "data_version": "v4_ablation_optimized",
+            }, CHECKPOINT_DIR / "firespreadnet_v4_best.pt")
             log(f"*** NEW BEST F1={best_f1:.4f} ***")
 
         history.append({
@@ -436,8 +436,8 @@ def main() -> None:
         })
 
     # Save stats and history
-    with open(CHECKPOINT_DIR / "firespreadnet_v3_channel_stats.json", "w") as f:
-        json.dump({"means": means.tolist(), "stds": stds.tolist(), "channel_order": list(CHANNEL_ORDER_V3)}, f, indent=2)
+    with open(CHECKPOINT_DIR / "firespreadnet_v4_channel_stats.json", "w") as f:
+        json.dump({"means": means.tolist(), "stds": stds.tolist(), "channel_order": list(CHANNEL_ORDER_V4)}, f, indent=2)
 
     per_fire = {}
     for i, name in enumerate(test_names):
@@ -448,13 +448,13 @@ def main() -> None:
             "train_fires": train_names, "test_fires": test_names,
             "best_f1": best_f1, "per_fire_test": per_fire,
             "epochs": history,
-            "data_version": "v3_prev_fire_state",
+            "data_version": "v4_ablation_optimized",
             "config": {"seq_len": SEQ_LEN, "batch_size": BATCH_SIZE, "lr": LR,
                        "n_epochs": N_EPOCHS, "n_channels": n_channels,
-                       "channel_order": list(CHANNEL_ORDER_V3)},
+                       "channel_order": list(CHANNEL_ORDER_V4)},
         }), f, indent=2)
 
-    log(f"\nDONE — FireSpreadNet V3: best F1={best_f1:.4f}")
+    log(f"\nDONE — FireSpreadNet V4: best F1={best_f1:.4f}")
     for name, res in per_fire.items():
         log(f"  {name}: F1={res['f1']:.4f} P={res['precision']:.4f} R={res['recall']:.4f}")
 
