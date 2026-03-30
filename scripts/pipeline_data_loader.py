@@ -554,3 +554,297 @@ def subsample_negatives(
     keep.sort()
 
     return X[keep], y[keep]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# V3: Pipeline-processed data (prev_fire_state approach — no leakage)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CHANNEL_ORDER_V3: list[str] = [
+    # Pre-shifted fire features (safe as input: prev_fire_state[t] = labels[t-1])
+    "prev_fire_state",
+    "prev_distance_to_fire",
+    "prev_fire_neighborhood",
+    # Hourly weather (RTMA)
+    "hourly_ugrd",
+    "hourly_vgrd",
+    "hourly_gust",
+    "hourly_tmp",
+    "hourly_dpt",
+    "hourly_soil_moisture",
+    # Daily fire weather (GRIDMET)
+    "daily_erc",
+    "daily_bi",
+    "daily_fm100",
+    "daily_fm1000",
+    "daily_vpd",
+    # Static terrain
+    "static_slope_deg",
+    "static_aspect_sin",
+    "static_aspect_cos",
+    "static_elevation",
+    "static_tpi",
+    "static_fuel_load",
+    "static_canopy_cover_pct",
+    # Vegetation
+    "slow_NDVI",
+    "slow_EVI",
+    # Temporal encoding
+    "temporal_hour_sin",
+    "temporal_hour_cos",
+    "temporal_doy_sin",
+    "temporal_doy_cos",
+    # Quality mask
+    "validity",
+]
+
+WIND_U_CH_V3: int = CHANNEL_ORDER_V3.index("hourly_ugrd")
+WIND_V_CH_V3: int = CHANNEL_ORDER_V3.index("hourly_vgrd")
+
+
+def load_processed_fire_data(
+    fire_name: str,
+    pipeline_dir: str,
+) -> tuple[dict, dict]:
+    """Load processed fire labels + feature arrays for the V3 pipeline format.
+
+    Returns (processed_arrays, feature_arrays).
+    processed_arrays keys: labels, validity, prev_fire_state, prev_distance_to_fire,
+                          prev_fire_neighborhood, loss_weights, fire_change, ...
+    feature_arrays keys: hourly_*, daily_*, static_*, slow_*, temporal_*
+    """
+    base = Path(pipeline_dir) / fire_name
+
+    proc_dir = base / "processed"
+    proc_candidates = sorted(proc_dir.glob(f"{fire_name}_*_processed.npz"))
+    if not proc_candidates:
+        raise FileNotFoundError(f"No processed NPZ in {proc_dir}")
+    feat_candidates = sorted(base.glob(f"{fire_name}_*_Features.npz"))
+    if not feat_candidates:
+        raise FileNotFoundError(f"No Features NPZ in {base}")
+
+    proc_npz = np.load(str(proc_candidates[0]), allow_pickle=True)
+    feat_npz = np.load(str(feat_candidates[0]), allow_pickle=True)
+
+    processed: dict[str, ndarray] = {}
+    for key in proc_npz.files:
+        if key.startswith("_"):
+            continue
+        processed[key] = proc_npz[key]
+
+    features: dict[str, ndarray] = {}
+    for key in feat_npz.files:
+        if key == "_metadata":
+            continue
+        features[key] = feat_npz[key]
+
+    return processed, features
+
+
+def build_channel_stack_v3(
+    processed: dict,
+    features: dict,
+    pad_h: int | None = None,
+    pad_w: int | None = None,
+) -> ndarray:
+    """Build (T, C, H, W) stack from processed + feature arrays (V3 format).
+
+    Uses prev_fire_state instead of raw confidence — no temporal leakage.
+    """
+    labels = processed["labels"]
+    T, H, W = labels.shape
+
+    if pad_h is None:
+        pad_h = max(32, ((H + 15) // 16) * 16)
+    if pad_w is None:
+        pad_w = max(48, ((W + 15) // 16) * 16)
+
+    C = len(CHANNEL_ORDER_V3)
+    stack = np.zeros((T, C, pad_h, pad_w), dtype=np.float32)
+
+    _PROC_KEYS = ["prev_fire_state", "prev_distance_to_fire", "prev_fire_neighborhood", "validity"]
+
+    for c, key in enumerate(CHANNEL_ORDER_V3):
+        if key in _PROC_KEYS:
+            arr = processed.get(key)
+        else:
+            arr = features.get(key)
+
+        if arr is None:
+            continue
+
+        arr = np.nan_to_num(arr.astype(np.float32), nan=0.0)
+
+        if arr.ndim == 2:
+            # Static (H, W) → broadcast
+            h_clip = min(arr.shape[0], H, pad_h)
+            w_clip = min(arr.shape[1], W, pad_w)
+            stack[:, c, :h_clip, :w_clip] = arr[:h_clip, :w_clip]
+        elif arr.ndim == 3:
+            t_clip = min(arr.shape[0], T)
+            h_clip = min(arr.shape[1], H, pad_h)
+            w_clip = min(arr.shape[2], W, pad_w)
+            stack[:t_clip, c, :h_clip, :w_clip] = arr[:t_clip, :h_clip, :w_clip]
+
+    return stack
+
+
+def iter_grid_sequences_v3(
+    stack: ndarray,
+    labels: ndarray,
+    validity: ndarray,
+    loss_weights: ndarray | None = None,
+    seq_len: int = 6,
+) -> Generator[tuple[ndarray, ndarray, ndarray, ndarray], None, None]:
+    """Yield (frames, target, mask, weights) for FireSpreadNet training (V3).
+
+    With pre-shifted fire features, we predict labels[t] from input at time t.
+    The stack already contains prev_fire_state[t] = labels[t-1].
+    """
+    T = stack.shape[0]
+
+    for t in range(seq_len - 1, T):
+        frames = stack[t - seq_len + 1: t + 1].astype(np.float32)
+        target = labels[t][np.newaxis].astype(np.float32)
+        mask = validity[t][np.newaxis].astype(np.float32)
+        w = loss_weights[t][np.newaxis].astype(np.float32) if loss_weights is not None else mask
+        yield frames, target, mask, w
+
+
+# ─── V3 XGBoost Pixel Features ───────────────────────────────────────────────
+
+_PIXEL_V3_STATIC_KEYS = _STATIC_KEYS
+_PIXEL_V3_HOURLY_KEYS = _HOURLY_KEYS
+_PIXEL_V3_DAILY_KEYS = _DAILY_KEYS
+_PIXEL_V3_SLOW_KEYS = _SLOW_KEYS
+_PIXEL_V3_TEMPORAL_KEYS = _TEMPORAL_KEYS
+
+
+def get_pixel_feature_names_v3(seq_len: int = 6, neighborhood: int = 1) -> list[str]:
+    """Feature names for V3 iter_pixel_samples_v3 output."""
+    names: list[str] = []
+
+    side = 2 * neighborhood + 1
+    for t_offset in range(seq_len):
+        for di in range(-neighborhood, neighborhood + 1):
+            for dj in range(-neighborhood, neighborhood + 1):
+                names.append(f"prev_fire_t-{seq_len - 1 - t_offset}_di{di}_dj{dj}")
+
+    names.append("prev_distance_to_fire")
+    names.append("prev_fire_neighborhood")
+
+    for key in _PIXEL_V3_STATIC_KEYS:
+        names.append(key.replace("static_", ""))
+
+    for key in _PIXEL_V3_HOURLY_KEYS:
+        names.append(key.replace("hourly_", ""))
+
+    for key in _PIXEL_V3_DAILY_KEYS:
+        names.append(key.replace("daily_", ""))
+
+    for key in _PIXEL_V3_SLOW_KEYS:
+        names.append(key.replace("slow_", ""))
+
+    for key in _PIXEL_V3_TEMPORAL_KEYS:
+        names.append(key.replace("temporal_", ""))
+
+    return names
+
+
+def iter_pixel_samples_v3(
+    processed: dict,
+    features: dict,
+    seq_len: int = 6,
+    neighborhood: int = 1,
+) -> Generator[tuple[ndarray, float, float], None, None]:
+    """Yield (feature_vector, label, loss_weight) for XGBoost (V3 format).
+
+    Uses prev_fire_state as the fire detection feature (pre-shifted by pipeline).
+    No temporal contamination — prev_fire_state[t] = labels[t-1] by construction.
+    Target is labels[t].
+    """
+    labels = processed["labels"]
+    validity = processed["validity"]
+    prev_fire = processed["prev_fire_state"]
+    prev_dist = processed["prev_distance_to_fire"]
+    prev_neigh = processed["prev_fire_neighborhood"]
+    loss_weights = processed.get("loss_weights")
+
+    T, H, W = labels.shape
+
+    static_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_STATIC_KEYS]
+    hourly_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_HOURLY_KEYS]
+    daily_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_DAILY_KEYS]
+    slow_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_SLOW_KEYS]
+    temporal_arrs = [_safe_get_2d(features.get(k), T, H, W) for k in _PIXEL_V3_TEMPORAL_KEYS]
+
+    side = 2 * neighborhood + 1
+    n_neigh = side * side
+    n_conf_feat = n_neigh * seq_len
+    n_total = (n_conf_feat + 2
+               + len(_PIXEL_V3_STATIC_KEYS) + len(_PIXEL_V3_HOURLY_KEYS)
+               + len(_PIXEL_V3_DAILY_KEYS) + len(_PIXEL_V3_SLOW_KEYS)
+               + len(_PIXEL_V3_TEMPORAL_KEYS))
+
+    prev_fire_padded = np.pad(
+        prev_fire, ((0, 0), (neighborhood, neighborhood), (neighborhood, neighborhood)),
+        mode="constant", constant_values=0.0,
+    )
+
+    for t in range(seq_len - 1, T):
+        target_valid = validity[t]
+        target_labels = labels[t]
+        target_weight = loss_weights[t] if loss_weights is not None else target_valid
+
+        valid_i, valid_j = np.where(target_valid > 0)
+
+        for idx in range(len(valid_i)):
+            i = valid_i[idx]
+            j = valid_j[idx]
+
+            fv = np.empty(n_total, dtype=np.float32)
+            pos = 0
+
+            # prev_fire_state 3x3 neighborhood over seq_len hours
+            for t_off in range(seq_len):
+                t_src = t - seq_len + 1 + t_off
+                if t_src < 0:
+                    fv[pos:pos + n_neigh] = 0.0
+                else:
+                    pi = i + neighborhood
+                    pj = j + neighborhood
+                    patch = prev_fire_padded[t_src, pi - neighborhood:pi + neighborhood + 1,
+                                             pj - neighborhood:pj + neighborhood + 1]
+                    fv[pos:pos + n_neigh] = patch.ravel()
+                pos += n_neigh
+
+            # Spatial fire context from previous timestep
+            fv[pos] = prev_dist[t, i, j]
+            pos += 1
+            fv[pos] = prev_neigh[t, i, j]
+            pos += 1
+
+            # Static terrain
+            for arr in static_arrs:
+                fv[pos] = arr[0, i, j]
+                pos += 1
+
+            # Weather at time t (no leakage — weather doesn't feed into labels)
+            for arr in hourly_arrs:
+                fv[pos] = arr[t, i, j]
+                pos += 1
+            for arr in daily_arrs:
+                fv[pos] = arr[t, i, j]
+                pos += 1
+
+            # Vegetation
+            for arr in slow_arrs:
+                fv[pos] = arr[0, i, j]
+                pos += 1
+
+            # Temporal encoding
+            for arr in temporal_arrs:
+                fv[pos] = arr[t, i, j]
+                pos += 1
+
+            yield fv, float(target_labels[i, j]), float(target_weight[i, j])

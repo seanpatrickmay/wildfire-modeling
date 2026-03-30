@@ -242,6 +242,8 @@ def augment_sequence_v2(
     target: torch.Tensor,
     mask: torch.Tensor,
     rng: torch.Generator | None = None,
+    wind_u_ch: int = WIND_U_CH,
+    wind_v_ch: int = WIND_V_CH,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Apply random flips with wind component correction.
 
@@ -258,13 +260,13 @@ def augment_sequence_v2(
         frames = frames.flip(-1)
         target = target.flip(-1)
         mask = mask.flip(-1)
-        frames[:, WIND_U_CH] = -frames[:, WIND_U_CH]
+        frames[:, wind_u_ch] = -frames[:, wind_u_ch]
 
     # Random vertical flip
     if torch.rand(1, generator=rng).item() > 0.5:
         frames = frames.flip(-2)
         target = target.flip(-2)
         mask = mask.flip(-2)
-        frames[:, WIND_V_CH] = -frames[:, WIND_V_CH]
+        frames[:, wind_v_ch] = -frames[:, wind_v_ch]
 
     return frames, target, mask
